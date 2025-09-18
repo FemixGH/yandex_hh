@@ -1,6 +1,0 @@
-pyjwt
-requests
-cryptography
-python-telegram-bot
-fastapi
-uvicorn

@@ -1,67 +1,35 @@
-import requests
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
-import logging
-import jwt
-import time
-from dotenv import load_dotenv
-import os
-import tempfile
-import boto3
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from handlers import start, handle_message, error_handler
+from yandex_get_token import yandex_bot
+from logger import logger
+from settings import REQUIRED_VARS
 
-
-REQUIRED_VARS = {
-    "S3_ENDPOINT": os.getenv("S3_ENDPOINT"),
-    "S3_ACCESS_KEY": os.getenv("S3_ACCESS_KEY"),
-    "S3_SECRET_KEY": os.getenv("S3_SECRET_KEY"),
-    "S3_BUCKET": os.getenv("S3_BUCKET"),
-}
 
 for var_name, value in REQUIRED_VARS.items():
     if not value or value.strip().lower() == "none":
         raise ValueError(f"{var_name} не задан. Проверьте .env.")
     
-    
-# безопасная загрузка из S3
-def download_from_s3(key: str):
-    # 1. Проверяем что key строка
-    if not isinstance(key, str):
-        return None
-    # 2. Пропускаем папки
-    if key.endswith('/'):
-        return None
+
+def main():
+    """Основная функция"""
     try:
-        s3 = boto3.client(
-            "s3",
-            endpoint_url=REQUIRED_VARS["S3_ENDPOINT"],
-            aws_access_key_id=REQUIRED_VARS["S3_ACCESS_KEY"],
-            aws_secret_access_key=REQUIRED_VARS["S3_SECRET_KEY"],
-        )
-        # 3. Проверяем размер до скачивания
-        head = s3.head_object(Bucket=REQUIRED_VARS["S3_BUCKET"], Key=key)
-        size_before = head.get("ContentLength", 0)
+        # Проверяем возможность генерации токена при запуске
+        yandex_bot.get_iam_token()
+        logger.info("IAM token test successful")
 
-        with tempfile.NamedTemporaryFile(delete=False) as tmp:
-            s3.download_fileobj(REQUIRED_VARS["S3_BUCKET"], key, tmp)
-            tmp.flush()
-            size_after = os.path.getsize(tmp.name)
+        application = Application.builder().token(REQUIRED_VARS["TELEGRAM_TOKEN"]).build()
 
-        if size_before != size_after:
-            os.remove(tmp.name)
-            return None
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_error_handler(error_handler)
 
-        return tmp.name
+        logger.info("Бот запускается...")
+        application.run_polling()
+
     except Exception as e:
-        logging.error(f"Ошибка при скачивании {key}: {e}")
-        return None
+        logger.error(f"Failed to start bot: {str(e)}")
 
 
-# валидация содержимого документов
-def validate_docs(loaded):
-    valid_docs = [
-        doc for doc in loaded
-        if hasattr(doc, 'page_content')
-        and isinstance(doc.page_content, str)
-        and doc.page_content.strip()
-    ]
-    return valid_docs
+
+if __name__ == "__main__":
+    main()    
