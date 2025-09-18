@@ -1,0 +1,34 @@
+2025-09-18 16:22:52,263 - dotenv.main - WARNING - python-dotenv could not parse statement starting at line 3
+2025-09-18 16:22:53,175 - __main__ - INFO - 🍸 ИИ Бармен запущен!
+2025-09-18 16:22:53,949 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getMe "HTTP/1.1 200 OK"
+2025-09-18 16:22:54,111 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/deleteWebhook "HTTP/1.1 200 OK"
+2025-09-18 16:22:54,115 - telegram.ext.Application - INFO - Application started
+2025-09-18 16:23:04,594 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:14,753 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:18,235 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:18,781 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/sendMessage "HTTP/1.1 200 OK"
+2025-09-18 16:23:18,782 - __main__ - INFO - Пользователь 1226566412 начал работу с ботом
+2025-09-18 16:23:28,397 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:38,798 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:48,966 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:23:59,263 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:09,518 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:19,670 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:29,820 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:39,972 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:46,624 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:46,628 - __main__ - INFO - Пользователь 1226566412 написал: '✅ Продолжить'
+2025-09-18 16:24:47,169 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/sendMessage "HTTP/1.1 200 OK"
+2025-09-18 16:24:51,509 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:24:51,511 - __main__ - INFO - Пользователь 1226566412 написал: '🍹 Коктейли'
+2025-09-18 16:24:51,720 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/sendMessage "HTTP/1.1 200 OK"
+2025-09-18 16:25:01,692 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:09,300 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:09,303 - __main__ - INFO - Пользователь 1226566412 написал: 'Я бы хотел выпить что-нибудь сладкое и приятнре на вечер'
+2025-09-18 16:25:09,827 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/sendMessage "HTTP/1.1 200 OK"
+2025-09-18 16:25:19,598 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:29,781 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:39,946 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:49,676 - httpx - INFO - HTTP Request: POST https://api.telegram.org/bot7401610613:AAFGeOU4F9ZZXE_vVI0lqaIXwvkyoQYft5E/getUpdates "HTTP/1.1 200 OK"
+2025-09-18 16:25:49,677 - telegram.ext.Application - INFO - Application is stopping. This might take a moment.
+2025-09-18 16:25:49,677 - telegram.ext.Application - INFO - Application.stop() complete
