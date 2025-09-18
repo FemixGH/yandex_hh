@@ -2,62 +2,56 @@
 import os
 import logging
 import requests
+import json
 from typing import List, Tuple, Optional
-
+import dotenv
+from settings import EMB_MODEL_URI, TEXT_MODEL_URI
+from yandex_jwt_auth import HEADERS, BASE_URL
 logger = logging.getLogger(__name__)
-YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
-BASE_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1"
 
-if not YANDEX_API_KEY:
-    logger.warning("YANDEX_API_KEY не задан. Yandex API вызовы упадут.")
-
-HEADERS = {
-    "Authorization": f"Api-Key {YANDEX_API_KEY}",
-    "Content-Type": "application/json"
-}
 
 def yandex_text_embedding(text: str, model_uri: Optional[str] = None) -> List[float]:
-    """
-    Возвращает embedding для одного текста как список float.
-    model_uri - например "models/text-embedding-***" (подставьте ваш modelUri).
-    Док: POST /foundationModels/v1/textEmbedding
-    """
     if model_uri is None:
-        model_uri = os.getenv("YAND_EMBEDDING_MODEL_URI", "models/text-embedding-clip-??")  # TODO: замените
+        model_uri = EMB_MODEL_URI
     url = f"{BASE_URL}/textEmbedding"
     payload = {"modelUri": model_uri, "text": text}
-    resp = requests.post(url, headers=HEADERS, json=payload, timeout=30)
-    if resp.status_code != 200:
-        logger.error("yandex_text_embedding error %s %s", resp.status_code, resp.text)
-        raise RuntimeError(f"Yandex embedding error: {resp.status_code}")
-    data = resp.json()
-    # data: {"embedding": ["0.123", "..."], "numTokens": "..."}
-    emb = data.get("embedding", [])
-    # API может вернуть числа как строки — приводим к float
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
+    if r.status_code != 200:
+        logger.error("Embedding error %s %s", r.status_code, r.text)
+        raise RuntimeError(f"Embedding error: {r.status_code}")
+    j = r.json()
+    emb = j.get("embedding") or j.get("embeddingVector") or []
+    # ensure floats
     return [float(x) for x in emb]
 
+
 def yandex_batch_embeddings(texts: List[str], model_uri: Optional[str] = None) -> List[List[float]]:
-    return [yandex_text_embedding(t, model_uri=model_uri) for t in texts]
+    # Yandex might not support large batch; do sequentially for safety.
+    out = []
+    for t in texts:
+        out.append(yandex_text_embedding(t, model_uri=model_uri))
+    return out
 
 def yandex_completion(messages: List[dict], model_uri: Optional[str] = None, temperature: float = 0.2, max_tokens: int = 1024) -> dict:
-    """
-    messages: list of {"role": "system/user/assistant", "text": "..."}
-    Возвращает JSON ответа Yandex Completion (synchronous /completion endpoint).
-    Док: POST /foundationModels/v1/completion
-    """
     if model_uri is None:
-        model_uri = os.getenv("YAND_TEXT_MODEL_URI", "gpt://b1g-example-id/yandexgpt-lite/latest")  # TODO: замените
+        model_uri = TEXT_MODEL_URI
     url = f"{BASE_URL}/completion"
     payload = {
         "modelUri": model_uri,
         "completionOptions": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens)},
         "messages": messages
     }
-    resp = requests.post(url, headers=HEADERS, json=payload, timeout=30)
-    if resp.status_code != 200:
-        logger.error("yandex_completion error %s %s", resp.status_code, resp.text)
-        return {"error": True, "status_code": resp.status_code, "text": resp.text}
-    return resp.json()
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
+    if r.status_code != 200:
+        logger.error("yandex_completion error %s %s", r.status_code, r.text)
+        return {"error": True, "status_code": r.status_code, "text": r.text}
+    try:
+        j = r.json()
+    except Exception as e:
+        logger.exception("Failed to parse yandex_completion json: %s", e)
+        return {"error": True, "reason": "invalid_json", "text": r.text}
+    logger.debug("yandex_completion raw json: %s", json.dumps(j, ensure_ascii=False))
+    return j
 
 def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Optional[List[dict]] = None) -> dict:
     """

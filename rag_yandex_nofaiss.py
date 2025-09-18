@@ -16,35 +16,15 @@ import os
 import io
 import boto3
 import fitz  # pip install pymupdf
+from faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE
+from yandex_api import yandex_text_embedding, yandex_batch_embeddings, yandex_completion, yandex_classify
+from moderation_yandex import pre_moderate_input, post_moderate_output, extract_text_from_yandex_completion
+from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 
-
-print("DEBUG:", os.getenv("SERVICE_ACCOUNT_ID"), os.getenv("KEY_ID"), os.getenv("FOLDER_ID"))
-
-
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Config from env ---
-SERVICE_ACCOUNT_ID = os.getenv("SERVICE_ACCOUNT_ID")
-KEY_ID = os.getenv("KEY_ID")
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-FOLDER_ID = os.getenv("FOLDER_ID") or os.getenv("YC_FOLDER_ID")
-
-# Model URIs — можно явно указать в .env, иначе соберём из FOLDER_ID
-EMB_MODEL_URI = os.getenv("YAND_EMBEDDING_MODEL_URI") or (f"emb://{FOLDER_ID}/text-search-doc/latest" if FOLDER_ID else None)
-TEXT_MODEL_URI = os.getenv("YAND_TEXT_MODEL_URI") or (f"gpt://{FOLDER_ID}/yandexgpt/latest" if FOLDER_ID else None)
-CLASSIFY_MODEL_URI = os.getenv("YAND_CLASSIFY_MODEL_URI") or (f"cls://{FOLDER_ID}/yandexgpt-lite/latest" if FOLDER_ID else None)
-
-VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "./vectorstore")
-
-S3_ENDPOINT = "https://storage.yandexcloud.net"
-S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
-S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
-S3_BUCKET = "vedroo"
-S3_PREFIX = ""
 
 
 def download_pdf_bytes(bucket: str, key: str, endpoint: str = S3_ENDPOINT,
@@ -166,192 +146,19 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return "\n".join(texts)
 
 
-# 1) Сформировать JWT для обмена на IAM-токен
-def create_jwt(sa_id, key_id, private_key):
-    now = int(time.time())
-    payload = {
-        "aud": "https://iam.api.cloud.yandex.net/iam/v1/tokens",
-        "iss": sa_id,
-        "iat": now,
-        "exp": now + 360  # 6 минут жизни JWT
-    }
-    encoded = jwt.encode(
-        payload,
-        private_key.replace('\\n', '\n'),  # если ключ в .env с \n
-        algorithm="PS256",
-        headers={"kid": key_id}
-    )
-    return encoded
-
-def exchange_jwt_for_iam_token(jwt_token):
-    url = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
-    resp = requests.post(url, json={"jwt": jwt_token})
-    if resp.status_code != 200:
-        raise RuntimeError(f"Failed to get IAM token: {resp.status_code} {resp.text}")
-    return resp.json()["iamToken"]
-
-if SERVICE_ACCOUNT_ID and KEY_ID and PRIVATE_KEY:
-    jwt_token = create_jwt(SERVICE_ACCOUNT_ID, KEY_ID, PRIVATE_KEY)
-    IAM_TOKEN = exchange_jwt_for_iam_token(jwt_token)
-    logger.info("IAM token successfully obtained")
-else:
-    raise RuntimeError("SERVICE_ACCOUNT_ID / KEY_ID / PRIVATE_KEY not set. Cannot obtain IAM token.")
-
-# Заголовки для Yandex API
-HEADERS = {
-    "Authorization": f"Bearer {IAM_TOKEN}",
-    "Content-Type": "application/json"
-}
-if FOLDER_ID:
-    HEADERS["X-Folder-Id"] = FOLDER_ID
-
-BASE_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1"
-
-logger.info("Using EMB_MODEL_URI=%s TEXT_MODEL_URI=%s CLASSIFY_MODEL_URI=%s VECTORSTORE_DIR=%s",
-            EMB_MODEL_URI, TEXT_MODEL_URI, CLASSIFY_MODEL_URI, VECTORSTORE_DIR)
-
-os.makedirs(VECTORSTORE_DIR, exist_ok=True)
-
-# --- Helper for robust parsing of Yandex completion response ---
-def extract_text_from_yandex_completion(resp_json: dict) -> str:
-    """
-    Robust extraction of textual content from Yandex completion response.
-    Returns empty string if no sensible text was found.
-    """
-    if not isinstance(resp_json, dict):
-        return ""
-
-    # Try canonical "result" -> "choices" -> message/content/text
-    try:
-        res = resp_json.get("result")
-        if isinstance(res, dict):
-            choices = res.get("choices")
-            if isinstance(choices, list) and len(choices) > 0:
-                ch = choices[0]
-                # If choice directly contains content list
-                if isinstance(ch, dict):
-                    # content (list of dicts)
-                    if "content" in ch and isinstance(ch["content"], list):
-                        texts = []
-                        for c in ch["content"]:
-                            if isinstance(c, dict) and "text" in c and isinstance(c["text"], str):
-                                texts.append(c["text"])
-                        if texts:
-                            return "\n".join(texts).strip()
-                    # message object
-                    if "message" in ch and isinstance(ch["message"], dict):
-                        msg = ch["message"]
-                        if "content" in msg and isinstance(msg["content"], list):
-                            texts = []
-                            for c in msg["content"]:
-                                if isinstance(c, dict) and "text" in c and isinstance(c["text"], str):
-                                    texts.append(c["text"])
-                            if texts:
-                                return "\n".join(texts).strip()
-                        if "text" in msg and isinstance(msg["text"], str):
-                            # ensure it's not just 'assistant' role leaked
-                            if msg["text"].strip().lower() != "assistant":
-                                return msg["text"].strip()
-    except Exception:
-        # fallthrough to generic search
-        pass
-
-    # Old-style alternatives handling
-    if "alternatives" in resp_json and isinstance(resp_json["alternatives"], list) and resp_json["alternatives"]:
-        alt = resp_json["alternatives"][0]
-        if isinstance(alt, dict):
-            msg = alt.get("message") or alt.get("content") or alt.get("text")
-            if isinstance(msg, dict) and "text" in msg and isinstance(msg["text"], str):
-                if msg["text"].strip().lower() != "assistant":
-                    return msg["text"].strip()
-            if isinstance(msg, str):
-                if msg.strip().lower() != "assistant":
-                    return msg.strip()
-            if isinstance(alt.get("message"), dict) and isinstance(alt["message"].get("content"), list):
-                texts = []
-                for c in alt["message"]["content"]:
-                    if isinstance(c, dict) and "text" in c and isinstance(c["text"], str):
-                        texts.append(c["text"])
-                if texts:
-                    return "\n".join(texts).strip()
-
-    # Generic search: find first non-role string (skip common role labels)
-    def find_first_nonrole_string(obj):
-        if isinstance(obj, str):
-            s = obj.strip()
-            if s and s.lower() not in ("assistant", "user", "system"):
-                return s
-            return None
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k == "role":
-                    continue
-                found = find_first_nonrole_string(v)
-                if found:
-                    return found
-        if isinstance(obj, list):
-            for v in obj:
-                found = find_first_nonrole_string(v)
-                if found:
-                    return found
-        return None
-
-    s = find_first_nonrole_string(resp_json)
-    return s[:4000].strip() if s else ""
-
-
-# --- Yandex API helpers ---
-def yandex_text_embedding(text: str, model_uri: Optional[str] = None) -> List[float]:
-    if model_uri is None:
-        model_uri = EMB_MODEL_URI
-    url = f"{BASE_URL}/textEmbedding"
-    payload = {"modelUri": model_uri, "text": text}
-    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
-    if r.status_code != 200:
-        logger.error("Embedding error %s %s", r.status_code, r.text)
-        raise RuntimeError(f"Embedding error: {r.status_code}")
-    j = r.json()
-    emb = j.get("embedding") or j.get("embeddingVector") or []
-    # ensure floats
-    return [float(x) for x in emb]
-
-def yandex_batch_embeddings(texts: List[str], model_uri: Optional[str] = None) -> List[List[float]]:
-    # Yandex might not support large batch; do sequentially for safety.
-    out = []
-    for t in texts:
-        out.append(yandex_text_embedding(t, model_uri=model_uri))
-    return out
-
-def yandex_completion(messages: List[dict], model_uri: Optional[str] = None, temperature: float = 0.2, max_tokens: int = 1024) -> dict:
-    if model_uri is None:
-        model_uri = TEXT_MODEL_URI
-    url = f"{BASE_URL}/completion"
-    payload = {
-        "modelUri": model_uri,
-        "completionOptions": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens)},
-        "messages": messages
-    }
-    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
-    if r.status_code != 200:
-        logger.error("yandex_completion error %s %s", r.status_code, r.text)
-        return {"error": True, "status_code": r.status_code, "text": r.text}
-    try:
-        j = r.json()
-    except Exception as e:
-        logger.exception("Failed to parse yandex_completion json: %s", e)
-        return {"error": True, "reason": "invalid_json", "text": r.text}
-    logger.debug("yandex_completion raw json: %s", json.dumps(j, ensure_ascii=False))
-    return j
-
-
-VECTORS_FILE = os.path.join(VECTORSTORE_DIR, "vectors.npy")
-METADATA_FILE = os.path.join(VECTORSTORE_DIR, "meta.pkl")
-
 def build_vectorstore_from_docs(docs: List[Dict], embedding_model_uri: Optional[str] = None):
     """
-    docs: list of {'id': str, 'text': str, 'meta': {...}}
+    Делегируем построение индекса модулю faiss_index_yandex.build_index.
+    Ожидаем, что там внутри вызываются эмбеддинги и создаются index.faiss, vectors.npy и meta.pkl.
     """
-    logger.info("Building vectorstore from %d docs...", len(docs))
+    logger.info("Building FAISS index for %d docs via faiss_index_yandex.build_index...", len(docs))
+    try:
+        return build_index(docs, model_uri=embedding_model_uri)
+    except Exception as e:
+        logger.exception("faiss_adapter.build_index failed: %s", e)
+        # Поддерживаем поведение — если faiss падает, пробуем сохранить как numpy-фоллбек:
+        logger.info("Falling back to numpy save (vectors.npy + meta.pkl).")
+    # Fallback: сохранить embs в vectors.npy и meta.pkl (как раньше)
     texts = [d["text"] for d in docs]
     embs = yandex_batch_embeddings(texts, model_uri=embedding_model_uri)
     mat = np.array(embs, dtype=np.float32)
@@ -362,20 +169,50 @@ def build_vectorstore_from_docs(docs: List[Dict], embedding_model_uri: Optional[
     np.save(VECTORS_FILE, mat)
     with open(METADATA_FILE, "wb") as f:
         pickle.dump(docs, f)
-    logger.info("Vectorstore saved: %s, %s", VECTORS_FILE, METADATA_FILE)
+    logger.info("Vectorstore saved (fallback): %s, %s", VECTORS_FILE, METADATA_FILE)
+    return True
 
 def load_vectorstore():
+    """
+    Загружает векторное хранилище. Делегируем faiss_adapter.load_index(), ожидая (index, mat, docs).
+    Возвращаем (mat, docs) для совместимости с остальным кодом.
+    """
+    try:
+        out = load_index()
+        # ожидаем tuple (index, mat, docs)
+        if isinstance(out, tuple) and len(out) == 3:
+            index, mat, docs = out
+            logger.info("Loaded FAISS index via adapter (n=%d)", len(docs))
+            return mat, docs
+        # если адаптер вернул неожиданный формат — бросим исключение и уйдём в fallback
+        raise RuntimeError("faiss_adapter.load_index returned unexpected format")
+    except Exception as e:
+        logger.exception("faiss_adapter.load_index failed: %s. Falling back to numpy files.", e)
+
+    # fallback: load numpy files
     if not os.path.exists(VECTORS_FILE) or not os.path.exists(METADATA_FILE):
         raise FileNotFoundError("Vectorstore files not found; build index first.")
     mat = np.load(VECTORS_FILE)
     with open(METADATA_FILE, "rb") as f:
         docs = pickle.load(f)
+    logger.info("Loaded vectorstore from numpy files (n=%d)", len(docs))
     return mat, docs
+
 
 def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optional[str] = None) -> List[Dict]:
     """
-    Возвращает top-k документов с полем 'score' (косинусного сходства).
+    Делегируем поиск faiss_adapter.semantic_search (ожидаем список dict с полем 'score').
+    Если адаптер падает — делаем in-memory fallback.
     """
+    try:
+        results = semantic_search(query, k=k, model_uri=embedding_model_uri)
+        if isinstance(results, list):
+            return results
+        logger.warning("faiss_adapter.semantic_search returned unexpected type: %r", type(results))
+    except Exception as e:
+        logger.exception("faiss_adapter.semantic_search failed: %s. Falling back to in-memory dot-product search.", e)
+
+    # fallback: in-memory search using vectors.npy + meta.pkl
     mat, docs = load_vectorstore()
     q_emb = np.array(yandex_batch_embeddings([query], model_uri=embedding_model_uri), dtype=np.float32)
     # normalize
@@ -384,7 +221,6 @@ def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optio
     q_emb = q_emb / q_norm
     # cosine similarity via dot product
     scores = (mat @ q_emb.T).squeeze()  # shape (n,)
-    # get top k
     idx = np.argsort(-scores)[:k]
     results = []
     for i in idx:
@@ -393,86 +229,6 @@ def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optio
         results.append(d)
     return results
 
-# --- Moderation (quick patterns + Yandex classify/completion fallback) ---
-TOXIC_PATTERNS = [
-    r"\b(убий|убей|самоубийств|суицид)\b",
-    r"\b(порно|порнограф|изнасилован)\b",
-    r"\b(нарко|героин|кокаин|лсд|метамфетам)\b",
-    r"\b(террор|бомб|взорв)\b",
-    r"\b(хакер|взлом|фишинг|scam)\b",
-]
-COMPILED = [__import__("re").compile(p, __import__("re").IGNORECASE | __import__("re").UNICODE) for p in TOXIC_PATTERNS]
-
-def quick_check(text: str) -> Tuple[bool, dict]:
-    if not text or not text.strip():
-        return False, {"reason": "empty_text"}
-    for pat in COMPILED:
-        if pat.search(text):
-            return False, {"reason": "pattern_block", "pattern": pat.pattern}
-    return True, {}
-
-def llm_moderation_yandex(text: str) -> Tuple[bool, dict]:
-    """
-    Надёжная версия: всегда возвращает (ok: bool, meta: dict).
-    Использует LLM (yandex_completion) и гарантирует fallback в случае ошибок.
-    """
-    try:
-        # quick pattern check already handled outside; here only LLM check
-        prompt = [
-            {"role": "system", "text": (
-                "Ты модератор. Определи, опасно ли содержимое текста. "
-                "Если это обычные запросы про еду, напитки, рецепты, развлечения, пожелания перчинки или более острое блюдо, если приходит про сообщение коктейль | безалкогольный и тд. — пометь как SAFE. "
-                "Если текст про наркотики, насилие, самоповреждение, незаконную деятельность — UNSAFE. "
-                "Верни ровно одно слово: SAFE или UNSAFE."
-            )},
-            {"role": "user", "text": f"Проверить текст: \"{text}\". Только одно слово: SAFE или UNSAFE."}
-        ]
-        cresp = yandex_completion(prompt)
-        if cresp.get("error"):
-            logger.warning("llm_moderation_yandex: completion returned error: %s", cresp)
-            return True, {"via": "completion_error", "raw": cresp}
-
-        # log raw response for debugging
-        logger.debug("llm_moderation raw json: %s", json.dumps(cresp, ensure_ascii=False))
-
-        txt = extract_text_from_yandex_completion(cresp)
-        # If model returned nothing sensible, treat as SAFE by default (for user queries)
-        if not txt or txt.strip() == "" or txt.strip().lower() == "assistant":
-            logger.info("llm_moderation_yandex: model returned empty text; treating as SAFE")
-            return True, {"via": "completion", "label": "SAFE", "raw_text": txt}
-
-        label = "SAFE" if "SAFE" in txt.upper() else "UNSAFE"
-        return (label == "SAFE"), {"via": "completion", "label": label, "raw_text": txt}
-    except Exception as e:
-        logger.exception("llm_moderation_yandex exception: %s", e)
-        # безопасный fallback — считать текст безопасным, но пометить в метаданных
-        return True, {"via": "exception", "error": str(e)}
-
-def pre_moderate_input(text: str) -> Tuple[bool, dict]:
-    """
-    Надёжно вызывает quick_check + llm_moderation_yandex и ВЕРНЁТ кортеж в любом случае.
-    """
-    try:
-        ok, meta = quick_check(text)
-        if not ok:
-            return False, meta  # quick_check уже возвращает объяснение
-        res = llm_moderation_yandex(text)
-        # защита на случай, если llm_moderation_yandex вдруг вернёт None или не кортеж
-        if not isinstance(res, tuple) or len(res) != 2:
-            logger.warning("pre_moderate_input: llm_moderation_yandex returned unexpected value: %r", res)
-            return True, {"via": "fallback", "reason": "llm_moderation_bad_return"}
-        return res
-    except Exception as e:
-        logger.exception("pre_moderate_input exception: %s", e)
-        # по безопасности — пусть запрос пройдёт модерацию (можно поменять поведение)
-        return True, {"via": "exception", "error": str(e)}
-
-def post_moderate_output(text: str) -> Tuple[bool, dict]:
-    # quick pattern check first
-    for pat in COMPILED:
-        if pat.search(text):
-            return False, {"reason": "post_pattern", "pattern": pat.pattern}
-    return llm_moderation_yandex(text)
 
 # --- Audit log helper ---
 AUDIT_FILE = os.path.join(VECTORSTORE_DIR, "moderation_audit.log")

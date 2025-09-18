@@ -9,7 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 INDEX_DIR = os.getenv("FAISS_INDEX_DIR", "faiss_index_yandex")
-META_FILE = os.path.join(INDEX_DIR, "meta.pkl")
+METADATA_FILE = os.path.join(INDEX_DIR, "meta.pkl")
 VECTORS_FILE = os.path.join(INDEX_DIR, "vectors.npy")
 IDX_FILE = os.path.join(INDEX_DIR, "index.faiss")
 
@@ -31,7 +31,7 @@ def build_index(docs: List[dict], model_uri: str = None):
     faiss.write_index(index, IDX_FILE)
     np.save(VECTORS_FILE, mat)
     # save metadata
-    with open(META_FILE, "wb") as f:
+    with open(METADATA_FILE, "wb") as f:
         pickle.dump(docs, f)
     logger.info("FAISS index built: %s (dim=%d, n=%d)", IDX_FILE, dim, len(docs))
     return True
@@ -40,7 +40,7 @@ def load_index():
     if not os.path.exists(IDX_FILE):
         raise FileNotFoundError("FAISS index not found")
     index = faiss.read_index(IDX_FILE)
-    with open(META_FILE, "rb") as f:
+    with open(METADATA_FILE, "rb") as f:
         docs = pickle.load(f)
     mat = np.load(VECTORS_FILE)
     return index, mat, docs
