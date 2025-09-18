@@ -2,22 +2,17 @@
 import os
 import json
 import time
-import math
 import pickle
 import logging
-import requests
 import numpy as np
 import asyncio
-import tempfile
 from typing import List, Dict, Tuple, Optional
-import jwt
 from dotenv import load_dotenv
 import os
-import io
 import boto3
 import fitz  # pip install pymupdf
-from faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE
-from yandex_api import yandex_text_embedding, yandex_batch_embeddings, yandex_completion, yandex_classify
+from faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE, METADATA_FILE
+from yandex_api import yandex_batch_embeddings, yandex_completion
 from moderation_yandex import pre_moderate_input, post_moderate_output, extract_text_from_yandex_completion
 from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 
