@@ -12,7 +12,7 @@ FOLDER_ID = os.getenv("FOLDER_ID") or os.getenv("YC_FOLDER_ID")
 EMB_MODEL_URI = os.getenv("YAND_EMBEDDING_MODEL_URI") or (f"emb://{FOLDER_ID}/text-search-doc/latest" if FOLDER_ID else None)
 TEXT_MODEL_URI = os.getenv("YAND_TEXT_MODEL_URI") or (f"gpt://{FOLDER_ID}/yandexgpt/latest" if FOLDER_ID else None)
 CLASSIFY_MODEL_URI = os.getenv("YAND_CLASSIFY_MODEL_URI") or (f"cls://{FOLDER_ID}/yandexgpt-lite/latest" if FOLDER_ID else None)
-
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "./vectorstore")
 
 S3_ENDPOINT = "https://storage.yandexcloud.net"

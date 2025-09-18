@@ -1,34 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-import logging
-from datetime import datetime
-from dotenv import load_dotenv
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-
-# Наш RAG без FAISS (см. rag_yandex_nofaiss.py)
+from yandex_jwt_auth import create_jwt, exchange_jwt_for_iam_token
+from settings import TELEGRAM_TOKEN
 from rag_yandex_nofaiss import async_answer_user_query, build_index_from_bucket
+from logging_conf import setup_logging
+setup_logging()
 
-# Настройка логирования
-load_dotenv()
-
-LOG_FILENAME = f"ai_bartender_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILENAME, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+import logging
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    logger.error("TELEGRAM_TOKEN не найден в переменных окружения. Установите в .env")
-    raise SystemExit("TELEGRAM_TOKEN отсутствует")
 
 # Состояние пользователей (минимальное)
 user_states = {}
@@ -132,8 +115,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
+    logger.info("🚀 Запуск бота...")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
+    logger.info("🔧 Создаю JWT и получаю IAM_TOKEN...")
+    logger.info("🔑 JWT создан, IAM_TOKEN получен")
     build_index_from_bucket("vedroo", "")
+    logger.info("📚 Индекс создан из бакета")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
