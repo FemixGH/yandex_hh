@@ -6,8 +6,7 @@ import pickle
 import logging
 import numpy as np
 import asyncio
-from typing import List, Dict, Tuple, Optional
-import os
+from typing import List, Dict, Tuple, Optional, Deque, TypedDict, Union, Any, cast
 import boto3
 import fitz
 from faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE, METADATA_FILE
@@ -15,23 +14,114 @@ from yandex_api import yandex_batch_embeddings, yandex_completion
 from moderation_yandex import pre_moderate_input, post_moderate_output, extract_text_from_yandex_completion
 from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 
+# --- new imports for rate limiting ---
+from collections import deque
+import threading
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Общий системный промпт бармена (задан пользователем)
 SYSTEM_PROMPT_BARTENDER = (
-    "Ты — историк кулинарии, описывающий традиционные рецепты разных культур. "
-    "Все ответы начинай с исторической справки.\n\n"
+        "Ты — дружелюбный ИИ-бармен. Ты специализируешься на коктейлях, алкогольных и безалкогольных напитках. "
+        "Используй контекст, если он есть, для точных рецептов и информации. "
+        "Если контекста недостаточно, используй свои знания о барном деле. "
+        "Отвечай подробно с рецептами, ингредиентами и способами приготовления. "
+        "Всегда будь позитивным и готовым помочь с любыми вопросами о напитках. "
+        "\n\nФорматирование ответа:\n"
+        "- Используй заголовки для названий напитков\n"
+        "- Перечисляй ингредиенты списком с дефисами\n"
+        "- Нумеруй шаги приготовления\n"
+        "- Указывай точные количества в мл, г, ст.л., ч.л.\n"
+        "- Добавляй температуру и время, если необходимо\n"
+        "- Структурируй ответ четко и читаемо"
+    )
 
-    "ШАБЛОН ОТВЕТА:\n"
-    "『ИСТОРИЧЕСКАЯ СПРАВКА』: Этот рецепт восходит к традициям [страна/период]...\n\n"
-    "『СОВРЕМЕННАЯ ИНТЕРПРЕТАЦИЯ』: В современной гастрономии...\n\n"
-    "『КОМПОНЕНТЫ』:\n"
-    "- Традиционный ингредиент 1\n"
-    "- Традиционный ингредиент 2\n\n"
-    "『ТЕХНОЛОГИЯ』 согласно историческим источникам...\n\n"
-    "＊Информация предоставлена в культурологических целях＊"
-)
+# --- Rate limiter implementation (per-user) ---
+class _RLState(TypedDict):
+    hits: Deque[float]
+    cooldown_until: float
+
+
+class RateLimiter:
+    """
+    Простой пер-пользовательский лимитер: не более N запросов за окно WINDOW секунд.
+    При превышении выставляет кулдаун на COOLDOWN секунд.
+
+    Конфиг через переменные окружения:
+      - RAG_RATE_LIMIT_RPM (int, по умолчанию 10)
+      - RAG_RATE_LIMIT_WINDOW_SECONDS (int, по умолчанию 60)
+      - RAG_RATE_LIMIT_COOLDOWN_SECONDS (int, по умолчанию 15)
+    """
+
+    def __init__(self, rpm: int = 10, window_seconds: int = 60, cooldown_seconds: int = 15):
+        self.rpm = max(1, int(rpm))
+        self.window = max(1, int(window_seconds))
+        self.cooldown = max(1, int(cooldown_seconds))
+        self._lock = threading.Lock()
+        # per-user state: { user_id: {"hits": deque[timestamps], "cooldown_until": float } }
+        self._state: Dict[Union[str, int], _RLState] = {}
+
+    def _now(self) -> float:
+        return time.time()
+
+    def is_allowed(self, user_id: int | str) -> Tuple[bool, float, str]:
+        """
+        Возвращает (allowed, wait_seconds, reason).
+        - allowed: можно ли пропускать запрос сейчас
+        - wait_seconds: сколько подождать до следующей попытки (округлено вверх)
+        - reason: причина блокировки ("cooldown" или "rate_limit") или "ok"
+        """
+        now = self._now()
+        with self._lock:
+            st = self._state.get(user_id)
+            if st is None:
+                st = cast(_RLState, {"hits": deque(), "cooldown_until": 0.0})
+                self._state[user_id] = st
+            hits: Deque[float] = st["hits"]
+            cooldown_until: float = st.get("cooldown_until", 0.0)
+
+            # Проверка кулдауна
+            if now < cooldown_until:
+                wait = max(0.0, cooldown_until - now)
+                return False, wait, "cooldown"
+
+            # Очистка старых хитов
+            window_start = now - self.window
+            while hits and hits[0] < window_start:
+                hits.popleft()
+
+            if len(hits) < self.rpm:
+                hits.append(now)
+                st["hits"] = hits
+                return True, 0.0, "ok"
+
+            # Превышение лимита — ставим кулдаун
+            st["cooldown_until"] = now + self.cooldown
+            # Подсчёт времени до следующего окна (для информирования)
+            next_allowed_in = min(
+                max(0.0, st["cooldown_until"] - now),
+                max(0.0, (hits[0] + self.window) - now)
+            )
+            return False, next_allowed_in, "rate_limit"
+
+
+# Создаём глобальный лимитер с конфигом из ENV
+try:
+    _RPM = int(os.getenv("RAG_RATE_LIMIT_RPM", "10"))
+except Exception:
+    _RPM = 10
+try:
+    _WIN = int(os.getenv("RAG_RATE_LIMIT_WINDOW_SECONDS", "60"))
+except Exception:
+    _WIN = 60
+try:
+    _CD = int(os.getenv("RAG_RATE_LIMIT_COOLDOWN_SECONDS", "15"))
+except Exception:
+    _CD = 15
+
+RATE_LIMITER = RateLimiter(rpm=_RPM, window_seconds=_WIN, cooldown_seconds=_CD)
+
 
 def download_pdf_bytes(bucket: str, key: str, endpoint: str = S3_ENDPOINT,
                        access_key: Optional[str] = None, secret_key: Optional[str] = None) -> bytes:
@@ -51,7 +141,7 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
     pages = []
     for page in doc:
-        pages.append(page.get_text())
+        pages.append(page.get_text())  # type: ignore[attr-defined]
     doc.close()
     return "\n".join(pages)
 
@@ -159,7 +249,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     Читает текст из PDF (байты) и возвращает одну большую строку.
     """
     doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
-    texts = [page.get_text() for page in doc]
+    texts = [page.get_text() for page in doc]  # type: ignore[attr-defined]
     doc.close()
     return "\n".join(texts)
 
@@ -185,7 +275,7 @@ def build_vectorstore_from_docs(docs: List[Dict], embedding_model_uri: Optional[
     mat = mat / norms
     np.save(VECTORS_FILE, mat)
     with open(METADATA_FILE, "wb") as f:
-        pickle.dump(docs, f)
+        pickle.dump(docs, f)  # type: ignore[arg-type]
     logger.info("Vectorstore saved (fallback): %s, %s", VECTORS_FILE, METADATA_FILE)
     return True
 
@@ -352,7 +442,26 @@ def generate_mood_based_cocktail(query: str, context: str = "", max_tokens: int 
 
 
 def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
-    meta = {"user_id": user_id, "query": user_text}
+    meta: Dict[str, Any] = {"user_id": user_id, "query": user_text}
+
+    # 0) rate limiting & cooldowns
+    try:
+        allowed, wait_s, reason = RATE_LIMITER.is_allowed(user_id)
+    except Exception as e:
+        # не блокируем при внутренней ошибке лимитера
+        logger.exception("RateLimiter error: %s", e)
+        allowed, wait_s, reason = True, 0.0, "error"
+
+    if not allowed:
+        wait_sec_int = int(wait_s) if wait_s == int(wait_s) else int(wait_s) + 1
+        msg = (
+            f"Слишком много запросов. Пожалуйста, подождите {wait_sec_int} сек и повторите. "
+            f"(лимит: {_RPM} в {_WIN} сек, кулдаун {_CD} сек)"
+        )
+        meta["rate_limited"] = {"reason": reason, "wait_seconds": wait_sec_int}
+        audit_log({"user_id": user_id, "action": "blocked_rate_limit", "query": user_text, "meta": meta})
+        return msg, {"blocked": True, **meta}
+
     # 1) pre-moderation
     try:
         ok_pre_res = pre_moderate_input(user_text)
@@ -476,7 +585,7 @@ async def async_answer_user_query(user_text: str, user_id: int, k: int = 3) -> T
     безопасно вызывается из async handle_message.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: answer_user_query_sync(user_text, user_id, k))
+    return await loop.run_in_executor(None, answer_user_query_sync, user_text, user_id, k)
 
 
 # --- Small utility for testing: add docs and build index ---
