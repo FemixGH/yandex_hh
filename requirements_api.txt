@@ -1,16 +1,17 @@
-# Дополнительные зависимости для FastAPI бэкенда
+# API Backend зависимости
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 python-multipart==0.0.6
 aiofiles==23.2.1
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+boto3==1.34.0
+PyMuPDF==1.23.0
+numpy==1.24.3
+faiss-cpu==1.7.4
+requests==2.31.0
+PyJWT==2.8.0
+cryptography==41.0.7
+aiohttp==3.9.0
 
-# Уже существующие зависимости (если нужно обновить)
-# requests>=2.31.0
-# boto3>=1.34.0
-# numpy>=1.24.0
-# pandas>=2.0.0
-# PyMuPDF>=1.23.0
-# python-telegram-bot>=20.0
-# faiss-cpu>=1.7.4
-# python-dotenv>=1.0.0

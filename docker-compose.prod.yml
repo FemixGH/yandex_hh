@@ -1,0 +1,133 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ai_bartender_backend_prod
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - ENVIRONMENT=production
+    env_file:
+      - .env.production
+    volumes:
+      - backend_logs:/app/logs
+      - vectorstore_data:/app/vectorstore
+      - faiss_data:/app/faiss_index_yandex
+    networks:
+      - bartender_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 1G
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Telegram Bot
+  telegram_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: ai_bartender_bot_prod
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+      - API_BASE_URL=http://backend:8000
+      - ENVIRONMENT=production
+    env_file:
+      - .env.production
+    volumes:
+      - bot_logs:/app/logs
+    networks:
+      - bartender_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+        reservations:
+          memory: 256M
+          cpus: "0.2"
+
+  # Redis для кеширования
+  redis:
+    image: redis:7-alpine
+    container_name: ai_bartender_redis_prod
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - bartender_network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.3"
+
+  # Nginx для проксирования (опционально)
+  nginx:
+    image: nginx:alpine
+    container_name: ai_bartender_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+    networks:
+      - bartender_network
+    restart: unless-stopped
+
+  # Monitoring с Prometheus (опционально)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai_bartender_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - bartender_network
+    restart: unless-stopped
+
+networks:
+  bartender_network:
+    driver: bridge
+
+volumes:
+  backend_logs:
+  bot_logs:
+  nginx_logs:
+  redis_data:
+  vectorstore_data:
+  faiss_data:
+  prometheus_data:

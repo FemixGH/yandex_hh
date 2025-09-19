@@ -1,0 +1,40 @@
+# Dockerfile для FastAPI Backend
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копирование файлов зависимостей
+COPY requirements_api.txt ./
+
+# Установка Python зависимостей
+RUN pip install --no-cache-dir -r requirements_api.txt
+
+# Копирование исходного кода
+COPY *.py ./
+COPY private-key.pem ./
+COPY faiss_index_yandex/ ./faiss_index_yandex/
+
+# Создание директорий
+RUN mkdir -p vectorstore logs
+
+# Переменные окружения
+ENV PYTHONPATH=/app
+ENV API_HOST=0.0.0.0
+ENV API_PORT=8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Expose порт
+EXPOSE 8000
+
+# Команда запуска
+CMD ["python", "backend_api.py"]
