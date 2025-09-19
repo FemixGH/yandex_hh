@@ -35,14 +35,19 @@ def download_pdf_bytes(bucket: str, key: str, endpoint: str = S3_ENDPOINT,
     return resp["Body"].read()
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
     pages = []
     for page in doc:
         pages.append(page.get_text())
+    doc.close()
     return "\n".join(pages)
 
 
-def chunk_text(text: str, max_chars: int = 6000) -> List[str]:
+def chunk_text(text: str, max_chars: int = 1500) -> List[str]:
+    """
+    Разбивает текст на фрагменты с учетом ограничений API Yandex (2048 токенов).
+    Используем консервативное значение 1500 символов ≈ 1000-1500 токенов.
+    """
     if not text:
         return []
     text = text.strip()
@@ -54,10 +59,13 @@ def chunk_text(text: str, max_chars: int = 6000) -> List[str]:
     while start < L:
         end = min(start + max_chars, L)
         if end < L:
+            # Ищем разрыв строки
             cut_pos = text.rfind('\n', start, end)
             if cut_pos <= start:
+                # Ищем пробел
                 cut_pos = text.rfind(' ', start, end)
             if cut_pos <= start:
+                # Если не нашли, режем принудительно
                 cut_pos = end
         else:
             cut_pos = end
@@ -77,9 +85,9 @@ def build_index_from_bucket(bucket: str, prefix: str = "", embedding_model_uri: 
     """
     if max_chunk_chars is None:
         try:
-            max_chunk_chars = int(os.getenv("YAND_MAX_CHUNK_CHARS", "6000"))
+            max_chunk_chars = int(os.getenv("YAND_MAX_CHUNK_CHARS", "1500"))
         except Exception:
-            max_chunk_chars = 6000
+            max_chunk_chars = 1500
 
     access_key = S3_ACCESS_KEY
     secret_key = S3_SECRET_KEY
@@ -135,8 +143,9 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """
     Читает текст из PDF (байты) и возвращает одну большую строку.
     """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    doc = fitz.Document(stream=pdf_bytes, filetype="pdf")
     texts = [page.get_text() for page in doc]
+    doc.close()
     return "\n".join(texts)
 
 
@@ -259,12 +268,29 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
         context_parts.append(f"Источник: {src}\n{txt}")
     context_for_model = "\n\n---\n\n".join(context_parts) if context_parts else ""
     # 3) call Yandex completion
-    system_prompt = "Ты — ИИ-бармен. Используй контекст, если он есть. Отвечай дружелюбно, кратко и безопасно. Если в контексте нет ответа — честно скажи, что не знаешь."
-    user_prompt = f"Контекст документов:\n{context_for_model}\n\nВопрос пользователя: {user_text}\nОтветь как бармен: рекомендации, рецепты, советы."
+    system_prompt = (
+        "Ты — дружелюбный ИИ-бармен. Ты специализируешься на коктейлях, алкогольных и безалкогольных напитках. "
+        "Используй контекст, если он есть, для точных рецептов и информации. "
+        "Если контекста недостаточно, используй свои знания о барном деле. "
+        "Отвечай подробно с рецептами, ингредиентами и способами приготовления. "
+        "Всегда будь позитивным и готовым помочь с любыми вопросами о напитках. "
+        "\n\nФорматирование ответа:\n"
+        "- Используй заголовки для названий напитков\n"
+        "- Перечисляй ингредиенты списком с дефисами\n"
+        "- Нумеруй шаги приготовления\n"
+        "- Указывай точные количества в мл, г, ст.л., ч.л.\n"
+        "- Добавляй температуру и время, если необходимо\n"
+        "- Структурируй ответ четко и читаемо"
+    )
+    user_prompt = f"Контекст документов:\n{context_for_model}\n\nВопрос пользователя: {user_text}\nОтветь как профессиональный бармен: рекомендации, рецепты, советы."
     yresp = yandex_completion([{"role": "system", "text": system_prompt}, {"role": "user", "text": user_prompt}])
     answer = "Извините, сейчас модель недоступна."
     if not yresp.get("error"):
-        answer = generate_compact_cocktail(yresp)
+        # Извлекаем текст из ответа Yandex API
+        answer = extract_text_from_yandex_completion(yresp)
+        if not answer:
+            # Если не удалось извлечь ответ, используем генератор коктейлей
+            answer = generate_compact_cocktail(user_text)
         if not answer:
             answer = "Извините, не удалось сформировать ответ."
     meta["raw_response_preview"] = answer[:500]
@@ -332,4 +358,3 @@ def build_index_from_plain_texts(text_docs: List[Tuple[str, str]], embedding_mod
         docs.append({"id": id_, "text": txt, "meta": {"source": id_}})
     build_vectorstore_from_docs(docs, embedding_model_uri=embedding_model_uri)
     logger.info("Index built from %d texts", len(text_docs))
-
