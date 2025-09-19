@@ -7,7 +7,7 @@ import json
 
 logger = logging.getLogger(__name__)
 
-# базовые паттерны (ваши уже были) — быстрый фильтр
+# базовые паттерны — быстрый фильтр
 TOXIC_PATTERNS = [
     r"\b(убий|убей|самоубийств|суицид)\b",
     r"\b(порно|порнограф|изнасилован)\b",
@@ -148,7 +148,7 @@ def extract_text_from_yandex_completion(resp_json: dict) -> str:
                 if texts:
                     return "\n".join(texts).strip()
 
-    # Generic search: find first non-role string (skip common role labels)
+
     def find_first_nonrole_string(obj):
         if isinstance(obj, str):
             s = obj.strip()

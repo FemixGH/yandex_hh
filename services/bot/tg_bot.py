@@ -4,7 +4,8 @@
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from yandex_jwt_auth import create_jwt, exchange_jwt_for_iam_token
-from settings import TELEGRAM_TOKEN
+from settings import TELEGRAM_TOKEN, ORCH_URL
+import requests
 from rag_yandex_nofaiss import async_answer_user_query, build_index_from_bucket
 from logging_conf import setup_logging
 setup_logging()
@@ -46,35 +47,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Ошибка в start: %s", e)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        uid = update.effective_user.id
-        text = (update.message.text or "").strip()
-        logger.info("Пользователь %s написал: %s", uid, text)
+    uid = update.effective_user.id
+    text = (update.message.text or "").strip()
+    logger.info("Пользователь %s написал: %s", uid, text)
 
         # Инициализация состояния, если вдруг нет
-        if uid not in user_states:
-            user_states[uid] = {"disclaimer_shown": False, "accepted_disclaimer": False}
+    if uid not in user_states:
+        user_states[uid] = {"disclaimer_shown": False, "accepted_disclaimer": False}
 
         # Если дисклеймер не принят — обрабатываем отдельно
-        if not user_states[uid].get("accepted_disclaimer", False):
-            if text == "✅ Продолжить":
-                user_states[uid]["accepted_disclaimer"] = True
-                keyboard = [["🍹 Коктейли", "🥤 Безалкогольные"], ["🎭 Настроение", "📖 Рецепты"]]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text(
-                    "🎉 Отлично! Теперь я ваш персональный бармен!\n\n"
-                    "💬 Просто напишите мне, что хотите, или используйте кнопки ниже.",
-                    reply_markup=reply_markup
-                )
-                return
-            elif text == "❌ Отказаться":
-                await update.message.reply_text("😔 Жаль — если передумаете, введите /start")
-                return
-            else:
-                keyboard = [["✅ Продолжить", "❌ Отказаться"]]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-                await update.message.reply_text("⚠️ Пожалуйста, сначала примите или отклоните условия.", reply_markup=reply_markup)
-                return
+    if not user_states[uid].get("accepted_disclaimer", False):
+        if text == "✅ Продолжить":
+            user_states[uid]["accepted_disclaimer"] = True
+            keyboard = [["🍹 Коктейли", "🥤 Безалкогольные"], ["🎭 Настроение", "📖 Рецепты"]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text(
+                "🎉 Отлично! Теперь я ваш персональный бармен!\n\n"
+                "💬 Просто напишите мне, что хотите, или используйте кнопки ниже.",
+                reply_markup=reply_markup
+            )
+            return
+        elif text == "❌ Отказаться":
+            await update.message.reply_text("😔 Жаль — если передумаете, введите /start")
+            return
+        else:
+            keyboard = [["✅ Продолжить", "❌ Отказаться"]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+            await update.message.reply_text("⚠️ Пожалуйста, сначала примите или отклоните условия.", reply_markup=reply_markup)
+            return
 
         # Если дисклеймер принят — обрабатываем запрос через RAG pipeline
         # Поддерживаем кнопки — преобразуем в понятный запрос
@@ -91,27 +91,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Вызов RAG pipeline (async wrapper)
         # async_answer_user_query выполняет pre/post модерацию и находит ответы в vectorstore
-        answer, meta = await async_answer_user_query(query, uid, k=3)
-
-        # Если модерация заблокировала — meta содержит блокировку
-        if meta.get("blocked"):
-            logger.info("Запрос %s заблокирован модерацией: %s", uid, meta.get("reason"))
-            # Отправляем пользователю безопасное сообщение (answer уже содержит текст ответа)
-            await update.message.reply_text(answer)
+    try:
+        r = requests.post(ORCH_URL, json={"user_id": uid, "text": text, "k": 3}, timeout=30)
+        if r.status_code != 200:
+            await update.message.reply_text("Сервис временно недоступен.")
             return
-
-        # Иначе отправляем ответ
-        await update.message.reply_text(answer)
-
-        # Логируем метаданные для диагностики
-        logger.info("Ответ отправлен пользователю %s. meta: retrieved=%s", uid, meta.get("retrieved_count"))
-
+        j = r.json()
+        if j.get("blocked"):
+            await update.message.reply_text("Извините, я не могу помочь с этим запросом.")
+            return
+        # result contains rag / model output (raw)
+        result = j.get("result", {})
+        # RAG returns {'answer': model_json, 'retrieved': [...]}
+        answer = result.get("answer")
+        # If answer is JSON (raw model response) try to extract readable text:
+        text_out = None
+        if isinstance(answer, dict):
+            # try to find string leaf
+            def find_first(obj):
+                if isinstance(obj, str): return obj
+                if isinstance(obj, dict):
+                    for v in obj.values():
+                        s = find_first(v)
+                        if s: return s
+                if isinstance(obj, list):
+                    for v in obj:
+                        s = find_first(v)
+                        if s: return s
+                return None
+            text_out = find_first(answer) or str(answer)
+        else:
+            text_out = str(answer)
+        await update.message.reply_text(text_out)
     except Exception as e:
-        logger.exception("Ошибка в handle_message: %s", e)
-        try:
-            await update.message.reply_text("😅 Извините, что-то пошло не так. Попробуйте ещё раз.")
-        except Exception:
-            pass
+        logger.exception("Error sending to orchestrator: %s", e)
+        await update.message.reply_text("Ошибка при обращении к сервису.")
 
 def main():
     """Запуск бота"""

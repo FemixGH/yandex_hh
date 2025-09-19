@@ -20,3 +20,11 @@ S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = "vedroo"
 S3_PREFIX = ""
+
+MOD_URL = os.getenv("MOD_PORT")
+RAG_URL = os.getenv("RAG_PORT")
+AUTH_URL = os.getenv("AUTH_PORT")
+LLM_URL = os.getenv("LLM_PORT")
+FAISS_URL = os.getenv("FAISS_PORT")
+BOT_URL = os.getenv("BOT_PORT")
+ORCH_URL = os.getenv("ORCH_PORT")

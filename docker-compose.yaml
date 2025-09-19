@@ -1,0 +1,90 @@
+version: "3.8"
+services:
+  auth:
+    build: ./services/auth
+    container_name: auth
+    environment:
+      - SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_ID}
+      - KEY_ID=${KEY_ID}
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - FOLDER_ID=${FOLDER_ID}
+    ports:
+      - "${AUTH_PORT:-5100}:8000"
+
+  llm-client:
+    build: ./services/llm-client
+    container_name: llm-client
+    environment:
+      - AUTH_URL=http://auth:8000/token
+      - BASE_URL=https://llm.api.cloud.yandex.net/foundationModels/v1
+      - EMB_MODEL_URI=${EMB_MODEL_URI}
+      - TEXT_MODEL_URI=${TEXT_MODEL_URI}
+      - CLASSIFY_MODEL_URI=${CLASSIFY_MODEL_URI}
+      - FOLDER_ID=${FOLDER_ID}
+    ports:
+      - "${LLM_PORT:-5200}:8000"
+    depends_on:
+      - auth
+
+  moderation:
+    build: ./services/moderation
+    container_name: moderation
+    environment:
+      - LLM_CLIENT_URL=http://llm-client:8000
+    ports:
+      - "${MOD_PORT:-5300}:8000"
+    depends_on:
+      - llm-client
+
+  faiss:
+    build: ./services/faiss
+    container_name: faiss
+    environment:
+      - LLM_CLIENT_URL=http://llm-client:8000
+      - FAISS_INDEX_DIR=/data/faiss
+    volumes:
+      - faiss_data:/data/faiss
+    ports:
+      - "${FAISS_PORT:-5400}:8000"
+    depends_on:
+      - llm-client
+
+  rag:
+    build: ./services/rag
+    container_name: rag
+    environment:
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - FAISS_URL=http://faiss:8000
+      - LLM_CLIENT_URL=http://llm-client:8000
+    ports:
+      - "${RAG_PORT:-5500}:8000"
+    depends_on:
+      - faiss
+      - llm-client
+
+  orchestrator:
+    build: ./services/orchestrator
+    container_name: orchestrator
+    environment:
+      - MOD_URL=http://moderation:8000
+      - RAG_URL=http://rag:8000
+    ports:
+      - "${ORCH_PORT:-5600}:8000"
+    depends_on:
+      - moderation
+      - rag
+
+  bot:
+    build: ./services/bot
+    container_name: bot
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - ORCH_URL=http://orchestrator:8000/query
+    depends_on:
+      - orchestrator
+    restart: unless-stopped
+
+volumes:
+  faiss_data:
