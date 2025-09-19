@@ -29,7 +29,7 @@ def process_file_for_bartender(file_bytes: bytes, filename: str, file_type: str 
         file_type: Тип файла (опционально)
 
     Returns:
-        List[Dict]: Список документов с метаданными
+        List[Dict]: Список документов с метаданными в формате {'id', 'text', 'meta'}
     """
     try:
         # Извлекаем текст из файла
@@ -46,14 +46,15 @@ def process_file_for_bartender(file_bytes: bytes, filename: str, file_type: str 
             logger.warning("Не удалось создать чанки из файла: %s", filename)
             return []
 
-        # Создаем документы
+        # Создаем документы в правильном формате
         documents = []
         for i, chunk in enumerate(chunks):
             doc = {
-                "content": chunk.strip(),
-                "metadata": {
+                "id": f"{os.path.basename(filename)}__part{i+1}",
+                "text": chunk.strip(),
+                "meta": {
                     "source": filename,
-                    "chunk_id": i,
+                    "part": i + 1,
                     "total_chunks": len(chunks),
                     "file_type": file_type or filename.split('.')[-1].lower()
                 }
@@ -173,7 +174,7 @@ def process_new_files(bucket_name: str, new_files: List[Dict]) -> Tuple[List[np.
                 continue
 
             # Создаем эмбеддинги для документов
-            texts = [doc["content"] for doc in docs]
+            texts = [doc["text"] for doc in docs]
             vectors = yandex_batch_embeddings(texts)
 
             if vectors is None or len(vectors) == 0:
@@ -182,9 +183,9 @@ def process_new_files(bucket_name: str, new_files: List[Dict]) -> Tuple[List[np.
 
             # Добавляем метаданные о файле к каждому документу
             for i, doc in enumerate(docs):
-                doc["source_file"] = key
-                doc["file_hash"] = get_file_hash(content)
-                doc["processed_at"] = datetime.now().isoformat()
+                doc["meta"]["source_file"] = key
+                doc["meta"]["file_hash"] = get_file_hash(content)
+                doc["meta"]["processed_at"] = datetime.now().isoformat()
 
             all_vectors.extend(vectors)
             all_docs.extend(docs)
@@ -211,8 +212,7 @@ def update_rag_incremental(bucket_name: str) -> bool:
         state = load_incremental_state()
 
         # Проверяем существование текущего индекса
-        if not os.path.exists(os.path.join(VECTORSTORE_DIR, VECTORS_FILE)) or \
-           not os.path.exists(os.path.join(VECTORSTORE_DIR, METADATA_FILE)):
+        if not os.path.exists(VECTORS_FILE) or not os.path.exists(METADATA_FILE):
             logger.info("Индекс не существует, требуется полная перестройка")
             return False
 
@@ -226,34 +226,47 @@ def update_rag_incremental(bucket_name: str) -> bool:
         logger.info("Найдено новых/измененных файлов: %d", len(new_files))
 
         # Загружаем существующий индекс
-        existing_vectors, existing_docs = load_index()
-        logger.info("Загружен существующий индекс: %d документов", len(existing_docs))
+        try:
+            index, existing_vectors, existing_docs = load_index()
+            logger.info("Загружен существующий индекс: %d документов", len(existing_docs))
+        except Exception as e:
+            logger.error("Не удалось загрузить существующий индекс: %s", e)
+            return False
 
         # Обрабатываем новые файлы
-        new_vectors, new_docs = process_new_files(bucket_name, new_files)
+        new_vectors_list, new_docs = process_new_files(bucket_name, new_files)
 
-        if not new_vectors:
+        if not new_vectors_list:
             logger.warning("Не удалось обработать ни одного нового файла")
             return True
 
         logger.info("Обработано новых документов: %d", len(new_docs))
 
+        # Преобразуем новые векторы в numpy массив
+        new_vectors_array = np.array(new_vectors_list, dtype=np.float32)
+
         # Объединяем существующие и новые данные
-        all_vectors = existing_vectors + new_vectors
+        all_vectors = np.vstack([existing_vectors, new_vectors_array])
         all_docs = existing_docs + new_docs
 
-        # Пересоздаем индекс с объединенными данными
-        vectors_array = np.array(all_vectors)
-        build_index(vectors_array, all_docs)
+        # Создаем новый индекс с объединенными данными
+        success = build_index(all_docs, embeddings=all_vectors)
+
+        if not success:
+            logger.error("Не удалось пересоздать индекс")
+            return False
 
         # Обновляем состояние
         for file_info in new_files:
             key = file_info["key"]
-            content = download_file_bytes(bucket_name, key)
-            state["processed_files"][key] = {
-                "hash": get_file_hash(content),
-                "last_modified": file_info["last_modified"]
-            }
+            try:
+                content = download_file_bytes(bucket_name, key)
+                state["processed_files"][key] = {
+                    "hash": get_file_hash(content),
+                    "last_modified": file_info["last_modified"]
+                }
+            except Exception as e:
+                logger.error("Не удалось обновить состояние для файла %s: %s", key, e)
 
         state["last_update"] = datetime.now().isoformat()
         save_incremental_state(state)
