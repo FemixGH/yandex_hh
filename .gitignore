@@ -69,8 +69,6 @@ Thumbs.db
 # Project specific
 logs/
 *.log
-vectorstore/
-faiss_index_yandex/
 private-key.pem
 .env
 
