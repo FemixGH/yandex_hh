@@ -51,5 +51,3 @@ logger.info("Using EMB_MODEL_URI=%s TEXT_MODEL_URI=%s CLASSIFY_MODEL_URI=%s VECT
             EMB_MODEL_URI, TEXT_MODEL_URI, CLASSIFY_MODEL_URI, VECTORSTORE_DIR)
 
 os.makedirs(VECTORSTORE_DIR, exist_ok=True)
-
-# --- Helper for robust parsing of Yandex completion response ---

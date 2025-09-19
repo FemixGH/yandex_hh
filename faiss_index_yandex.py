@@ -1,4 +1,4 @@
-# faiss_index_yandex.py
+
 import os
 import faiss
 import pickle
