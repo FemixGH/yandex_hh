@@ -201,4 +201,3 @@ def extract_text_from_yandex_completion(resp_json: dict) -> str:
 
     s = find_first_nonrole_string(resp_json)
     return s[:4000].strip() if s else ""
-
