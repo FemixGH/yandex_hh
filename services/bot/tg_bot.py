@@ -3,7 +3,7 @@
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from yandex_jwt_auth import create_jwt, exchange_jwt_for_iam_token
+from services.auth.auth import create_jwt, exchange_jwt_for_iam_token
 from settings import TELEGRAM_TOKEN, ORCH_URL
 import requests
 from rag_yandex_nofaiss import async_answer_user_query, build_index_from_bucket

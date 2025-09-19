@@ -5,7 +5,7 @@ import requests
 import json
 from typing import List, Optional
 from settings import EMB_MODEL_URI, TEXT_MODEL_URI
-from yandex_jwt_auth import HEADERS, BASE_URL
+from services.auth.auth import HEADERS, BASE_URL
 logger = logging.getLogger(__name__)
 
 
