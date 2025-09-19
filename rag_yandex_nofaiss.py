@@ -7,10 +7,9 @@ import logging
 import numpy as np
 import asyncio
 from typing import List, Dict, Tuple, Optional
-from dotenv import load_dotenv
 import os
 import boto3
-import fitz  # pip install pymupdf
+import fitz 
 from faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE, METADATA_FILE
 from yandex_api import yandex_batch_embeddings, yandex_completion
 from moderation_yandex import pre_moderate_input, post_moderate_output, extract_text_from_yandex_completion
@@ -157,7 +156,6 @@ def build_vectorstore_from_docs(docs: List[Dict], embedding_model_uri: Optional[
     texts = [d["text"] for d in docs]
     embs = yandex_batch_embeddings(texts, model_uri=embedding_model_uri)
     mat = np.array(embs, dtype=np.float32)
-    # normalize for cosine
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     mat = mat / norms
@@ -184,7 +182,6 @@ def load_vectorstore():
     except Exception as e:
         logger.exception("faiss_adapter.load_index failed: %s. Falling back to numpy files.", e)
 
-    # fallback: load numpy files
     if not os.path.exists(VECTORS_FILE) or not os.path.exists(METADATA_FILE):
         raise FileNotFoundError("Vectorstore files not found; build index first.")
     mat = np.load(VECTORS_FILE)
@@ -207,14 +204,11 @@ def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optio
     except Exception as e:
         logger.exception("faiss_adapter.semantic_search failed: %s. Falling back to in-memory dot-product search.", e)
 
-    # fallback: in-memory search using vectors.npy + meta.pkl
     mat, docs = load_vectorstore()
     q_emb = np.array(yandex_batch_embeddings([query], model_uri=embedding_model_uri), dtype=np.float32)
-    # normalize
     q_norm = np.linalg.norm(q_emb, axis=1, keepdims=True)
     q_norm[q_norm == 0] = 1.0
     q_emb = q_emb / q_norm
-    # cosine similarity via dot product
     scores = (mat @ q_emb.T).squeeze()  # shape (n,)
     idx = np.argsort(-scores)[:k]
     results = []
@@ -225,7 +219,6 @@ def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optio
     return results
 
 
-# --- Audit log helper ---
 AUDIT_FILE = os.path.join(VECTORSTORE_DIR, "moderation_audit.log")
 def audit_log(entry: dict):
     entry_out = {"ts": time.time(), **entry}
@@ -340,4 +333,3 @@ def build_index_from_plain_texts(text_docs: List[Tuple[str, str]], embedding_mod
     build_vectorstore_from_docs(docs, embedding_model_uri=embedding_model_uri)
     logger.info("Index built from %d texts", len(text_docs))
 
-# End of module
