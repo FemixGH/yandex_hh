@@ -4,17 +4,17 @@
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from settings import TELEGRAM_TOKEN, ORCH_URL as ORCH_URL_RAW
-from services.faiss.faiss import build_index, load_index, build_docs_from_s3
-from services.rag.incremental_rag import update_rag_incremental, save_incremental_state, get_bucket_files
 from services.orchestrator.orchestrator import query as orch_query_sync
 from services.auth.auth import start_auth
+from services.faiss.faiss import load_index, build_index, build_docs_from_s3
+from services.rag.incremental_rag import update_rag_incremental, get_bucket_files, save_incremental_state
+from datetime import datetime
 import logging
-import os
 import asyncio
+import os
 import re
 import requests
 from urllib.parse import urlparse
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,7 @@ def main():
     logger.info("🚀 Запуск бота...")
 
     # Initialize auth once at startup (fail early)
+    #АВТОРИЗАЦИЯ
     try:
         start_auth()
     except Exception as e:
@@ -265,7 +266,7 @@ def main():
         logger.error("Завершаю запуск — исправьте конфигурацию аутентификации и перезапустите.")
         return
 
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    #ПРОВЕРКА ИНКРЕМЕНТАЛЬНОГО ОБНОВЛЕНИЯ И ЗАГРУЗКА ИНДЕКСА
     force_rebuild = os.getenv("FORCE_REBUILD_INDEX", "").lower() in ["true", "1", "yes"]
 
     try:
@@ -325,6 +326,7 @@ def main():
     except Exception as e:
         logger.exception("❌ Ошибка при работе с индексом: %s", e)
 
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

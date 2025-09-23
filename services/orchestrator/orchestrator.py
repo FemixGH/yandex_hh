@@ -5,6 +5,10 @@ import requests
 from typing import Dict
 from services.moderation.moderation import pre_moderate_input
 from services.rag.rag import answer_user_query_sync
+from services.faiss.faiss import build_index, load_index, build_docs_from_s3
+from services.rag.incremental_rag import update_rag_incremental, save_incremental_state, get_bucket_files
+from services.auth.auth import start_auth
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +25,8 @@ BOT_API_KEY = os.getenv("BOT_TO_ORCH_API_KEY", "botsecret")
 def _local_query(user_id: int, text: str) -> Dict:
     # Здесь используем ваши существующие функции
     # импорт внутри функции чтобы избежать init-side effects при импорте модуля
-
-
+    
+    # 1) pre moderation
     ok, meta = pre_moderate_input(text)
     if not ok:
         return {"ok": False, "reason": "moderation", "meta": meta}

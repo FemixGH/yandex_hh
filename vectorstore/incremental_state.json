@@ -2,12 +2,56 @@
   "processed_files": {
     "9785171169701.pdf": {
       "hash": "286d788ac1583333b2683a2bd09f07ee",
-      "last_modified": "2025-09-23T17:14:38.787000+00:00"
+      "last_modified": "2025-09-19T05:29:02.995000+00:00"
     },
     "cocktail_book.pdf": {
       "hash": "679747ce311c7ad113dcba61e9a699f6",
-      "last_modified": "2025-09-23T17:24:29.872000+00:00"
+      "last_modified": "2025-09-19T11:06:56.418000+00:00"
+    },
+    "Akifiev.pdf": {
+      "hash": "ee9ed3650ad2822f464b6923dce97a18",
+      "last_modified": "2025-09-19T12:14:17.908000+00:00"
+    },
+    "Fomina_N_E_Luchshie_recepty_spirtnyh_napitkov_i_samogona_2009.pdf": {
+      "hash": "a336c5a4f4890f34400519b2a3facf23",
+      "last_modified": "2025-09-19T12:14:50.648000+00:00"
+    },
+    "Pakett_M._Vino_Prakticheskiy_putevoditel.Fragment.pdf": {
+      "hash": "72adbbe4ee60cf95f22dca65c831056f",
+      "last_modified": "2025-09-19T12:14:55.507000+00:00"
+    },
+    "Pohl_bkin_Vilyam_Vasilevich_-_Istoriya_vodki.pdf": {
+      "hash": "bb1a769e625e5a7fd404c8b1aecf43f1",
+      "last_modified": "2025-09-19T12:14:56.790000+00:00"
+    },
+    "Robinson-Dzhensis-Vinnyj-Ehkspert-za-24-Chasa-2016.pdf": {
+      "hash": "f7d3e3ec4f55443cde9e8a6dfdbe0751",
+      "last_modified": "2025-09-19T12:14:53.107000+00:00"
+    },
+    "Sekrety-Somele-Popov-Andrej-2009.pdf": {
+      "hash": "693389b9413d3beed41264bd6b90ec1d",
+      "last_modified": "2025-09-19T12:15:39.246000+00:00"
+    },
+    "all_drinks.csv": {
+      "hash": "84bbe8ad016f7b238bc78520cfc454f3",
+      "last_modified": "2025-09-19T11:06:55.371000+00:00"
+    },
+    "final_cocktails.csv": {
+      "hash": "d32b6d2dff69c8c7185ea55e75e3ad83",
+      "last_modified": "2025-09-19T11:06:55.444000+00:00"
+    },
+    "hotaling_cocktails - Cocktails.csv": {
+      "hash": "ad8bca6132c0ed6e148c5a4506fe66de",
+      "last_modified": "2025-09-19T11:21:19.349000+00:00"
+    },
+    "shalygin_book_enotherapy-op.pdf": {
+      "hash": "c4b5ac5dea1c79a7c65af44561d183df",
+      "last_modified": "2025-09-19T12:15:16.513000+00:00"
+    },
+    "Энциклопедия_крепких_спиртных_напитков.pdf": {
+      "hash": "2577bc66a1451b76621b59fd6c555296",
+      "last_modified": "2025-09-19T12:15:34.984000+00:00"
     }
   },
-  "last_update": "2025-09-23T22:54:19.563033"
+  "last_update": "2025-09-24T00:05:59.268104"
 }
