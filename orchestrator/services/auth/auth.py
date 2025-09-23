@@ -5,9 +5,14 @@ import jwt
 import requests
 import logging
 from typing import Optional
-from settings import SERVICE_ACCOUNT_ID, KEY_ID, FOLDER_ID, VECTORSTORE_DIR, PRIVATE_KEY
 
 logger = logging.getLogger(__name__)
+SERVICE_ACCOUNT_ID = os.getenv("SERVICE_ACCOUNT_ID")
+KEY_ID = os.getenv("KEY_ID") 
+FOLDER_ID = os.getenv("FOLDER_ID")
+VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "/app/vectorstore")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+
 
 # Базовый URL Yandex — можно переопределить в окружении
 BASE_URL = os.getenv("YANDEX_BASE_URL", "https://llm.api.cloud.yandex.net/foundationModels/v1")

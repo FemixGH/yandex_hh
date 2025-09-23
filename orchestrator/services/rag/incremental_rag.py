@@ -8,10 +8,15 @@ import boto3
 import numpy as np
 from datetime import datetime
 import tempfile
-from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 from services.rag.embending import yandex_batch_embeddings
 
 logger = logging.getLogger(__name__)
+
+
+VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "/app/vectorstore")
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
 
 INCREMENTAL_STATE_FILE = os.path.join(VECTORSTORE_DIR, "incremental_state.json")
 VECTORS_FILE = "vectors.npy"

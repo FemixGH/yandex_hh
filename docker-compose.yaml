@@ -6,7 +6,7 @@ services:
       context: ./orchestrator
       dockerfile: Dockerfile.api
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_ID}

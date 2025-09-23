@@ -5,11 +5,11 @@ import requests
 import json
 import time
 from typing import List, Optional, Dict, Any
-from settings import EMB_MODEL_URI, TEXT_MODEL_URI
 from services.auth.auth import get_headers, BASE_URL
 logger = logging.getLogger(__name__)
 
-
+EMB_MODEL_URI = os.getenv("EMB_MODEL_URI", "your_emb_model_uri")
+TEXT_MODEL_URI = os.getenv("TEXT_MODEL_URI", "your_text_model_uri")
 
 def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retries: int = 3, delay: float = 1.0) -> List[float]:
     """

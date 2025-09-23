@@ -1,0 +1,29 @@
+# FastAPI и веб-сервер
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
+
+# Pydantic для моделей
+pydantic==2.5.0
+
+# HTTP клиенты
+aiohttp==3.9.1
+requests==2.31.0
+
+# Аутентификация
+PyJWT==2.8.0
+
+# Векторный поиск и машинное обучение
+faiss-cpu==1.7.4
+numpy==1.24.3
+scikit-learn==1.3.2
+
+# Работа с S3 и облачными хранилищами
+boto3==1.34.0
+botocore==1.34.0
+
+# Дополнительные утилиты
+python-dotenv==1.0.0
+pydantic-settings==2.1.0
+
+PyMuPDF==1.23.8

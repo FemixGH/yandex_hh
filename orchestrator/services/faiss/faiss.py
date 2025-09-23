@@ -9,7 +9,12 @@ import json
 import logging
 from typing import List, Optional, Tuple, Dict, Any
 from services.rag.embending import yandex_batch_embeddings
-from settings import S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
+
+logger = logging.getLogger(__name__)
+
+S3_ENDPOINT = os.getenv("S3_ENDPOINT", "")
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
 
 logger = logging.getLogger(__name__)
 
