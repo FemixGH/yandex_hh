@@ -124,7 +124,10 @@ class ServiceClient:
             raise HTTPException(status_code=500, detail=f"Неизвестный сервис: {service_name}")
 
         config = SERVICES_CONFIG[service_name]
-        url = f"{config['url']}{endpoint}"
+        # Безопасная склейка URL без двойных слешей (//path вызывает 405 у прокси)
+        base = str(config["url"]).rstrip("/")
+        path = str(endpoint).lstrip("/")
+        url = f"{base}/{path}"
 
         try:
             if method.upper() == "GET":
