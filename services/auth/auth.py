@@ -5,12 +5,12 @@ import jwt
 import requests
 import logging
 from typing import Optional
-from settings import SERVICE_ACCOUNT_ID, KEY_ID, FOLDER_ID, VECTORSTORE_DIR
+from settings import SERVICE_ACCOUNT_ID, KEY_ID, FOLDER_ID, VECTORSTORE_DIR, PRIVATE_KEY
 
 logger = logging.getLogger(__name__)
 
 # Базовый URL Yandex — можно переопределить в окружении
-BASE_URL = os.getenv("YANDEX_BASE_URL", "https://llm.api.cloud.yandex.net")
+BASE_URL = os.getenv("YANDEX_BASE_URL", "https://llm.api.cloud.yandex.net/foundationModels/v1")
 
 # Модульные переменные, которыми будут пользоваться другие модули
 HEADERS: Optional[dict] = None
@@ -60,10 +60,7 @@ def start_auth() -> dict:
 
     if not SERVICE_ACCOUNT_ID or not KEY_ID:
         raise RuntimeError("SERVICE_ACCOUNT_ID / KEY_ID not set. Cannot obtain IAM token.")
-
-    pem_file_path = os.path.join(os.path.dirname(__file__), "private-key.pem")
-    private_key = load_private_key_from_pem(pem_file_path)
-    jwt_token = create_jwt(SERVICE_ACCOUNT_ID, KEY_ID, private_key)
+    jwt_token = create_jwt(SERVICE_ACCOUNT_ID, KEY_ID, PRIVATE_KEY)
     IAM_TOKEN = exchange_jwt_for_iam_token(jwt_token)
     logger.info("IAM token successfully obtained")
 

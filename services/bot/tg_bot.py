@@ -3,86 +3,70 @@
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from settings import TELEGRAM_TOKEN, ORCH_URL
+from settings import TELEGRAM_TOKEN, ORCH_URL as ORCH_URL_RAW
 from services.faiss.faiss import build_index, load_index, build_docs_from_s3
 from services.rag.incremental_rag import update_rag_incremental
 from services.orchestrator.orchestrator import query as orch_query_sync
+from services.auth.auth import start_auth
 import logging
 import os
 import asyncio
 import re
 import sys
-from services.auth.auth import start_auth
 import requests
+from urllib.parse import urlparse
 
-
-
-import logging
 logger = logging.getLogger(__name__)
 
+# Normalize ORCH_URL (ensure scheme)
+ORCH_URL = ORCH_URL_RAW
+if ORCH_URL:
+    parsed = urlparse(ORCH_URL)
+    if not parsed.scheme:
+        ORCH_URL = "http://" + ORCH_URL
+        logger.info("Normalized ORCH_URL -> %s", ORCH_URL)
+else:
+    ORCH_URL = None
+    logger.warning("ORCH_URL not configured; remote orchestrator calls disabled")
 
 # Состояние пользователей (минимальное)
 user_states = {}
 
 def escape_markdown_v2(text: str) -> str:
-    # Символы, которые нужно экранировать в MarkdownV2
     escape_chars = r'_*[]()~`>#+-=|{}.!'
-
     for char in escape_chars:
         text = text.replace(char, f'\\{char}')
-
-    return text
-
-def format_markdown_message(text: str) -> str:
-    # Не экранируем эмодзи и базовые символы
-    # Эта функция будет использоваться для системных сообщений бота
     return text
 
 def format_bartender_response(text: str) -> str:
-    # Заменяем обычные символы на Markdown форматирование
-
+    if not text:
+        return text or ""
     # Заголовки рецептов (делаем жирными)
     text = re.sub(r'^([А-ЯЁA-Z][^:\n]*):?\s*$', r'*\1*', text, flags=re.MULTILINE)
-
-    # Ингредиенты (делаем курсивом строки с дефисами)
+    # Ингредиенты
     text = re.sub(r'^- (.+)$', r'• _\1_', text, flags=re.MULTILINE)
-
-    # Шаги приготовления (нумерованные списки)
+    # Шаги приготовления
     text = re.sub(r'^(\d+)\.\s*(.+)$', r'*\1\.* \2', text, flags=re.MULTILINE)
-
     # Выделяем названия напитков жирным
     drinks = ['мохито', 'мартини', 'маргарита', 'пина колада', 'космополитен', 'дайкири', 'кайпиринья', 'негрони', 'апероль спритц', 'олд фэшн']
     for drink in drinks:
         pattern = r'\b(' + re.escape(drink) + r')\b'
         text = re.sub(pattern, r'*\1*', text, flags=re.IGNORECASE)
-
-    # Выделяем температуры и время
+    # Время/температуры
     text = re.sub(r'\b(\d+\s*°C|\d+\s*градус|\d+\s*мин|\d+\s*сек)\b', r'`\1`', text)
-
-    # Выделяем количества ингредиентов
+    # Количества
     text = re.sub(r'\b(\d+\s*мл|\d+\s*г|\d+\s*ст\.?\s*л\.?|\d+\s*ч\.?\s*л\.?)\b', r'`\1`', text)
-
     return text
 
 def get_user_info(update: Update) -> str:
-    """Получает информацию о пользователе для логирования"""
     user = update.effective_user
     if not user:
         return "Unknown"
-
-    info_parts = []
-    if user.username:
-        info_parts.append(f"@{user.username}")
-    if user.first_name:
-        info_parts.append(user.first_name)
-    if user.last_name:
-        info_parts.append(user.last_name)
-
-    if info_parts:
-        return f"{user.id} ({' '.join(info_parts)})"
-    else:
-        return str(user.id)
-
+    parts = []
+    if user.username: parts.append(f"@{user.username}")
+    if user.first_name: parts.append(user.first_name)
+    if user.last_name: parts.append(user.last_name)
+    return f"{user.id} ({' '.join(parts)})" if parts else str(user.id)
 
 DISCLAIMER = """
 ⚠️ ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ ⚠️
@@ -99,78 +83,57 @@ DISCLAIMER = """
 Если вы согласны с условиями, нажмите "✅ Продолжить" 👇
 """
 
-# Команды
+# -----------------------
+# Handlers
+# -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        start_auth()
-    except:
-        raise("Авторизация не удалась")
     try:
         uid = update.effective_user.id
         user_states[uid] = {"disclaimer_shown": True, "accepted_disclaimer": False}
-
         keyboard = [["✅ Продолжить", "❌ Отказаться"]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-        formatted_disclaimer = escape_markdown_v2(DISCLAIMER)
-        await update.message.reply_text(
-            f"🍸 Привет\\! Я ИИ Бармен\\!\n\n{formatted_disclaimer}",
-            reply_markup=reply_markup,
-            parse_mode='MarkdownV2'
-        )
         await update.message.reply_text(f"🍸 Привет! Я ИИ Бармен!\n\n{DISCLAIMER}", reply_markup=reply_markup)
         logger.info("User %s started bot", uid)
     except Exception as e:
         logger.exception("Ошибка в start: %s", e)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = None
     try:
         uid = update.effective_user.id
         text = (update.message.text or "").strip()
+        query = text  # default
         user_info = get_user_info(update)
         logger.info("Пользователь %s написал: %s", uid, text)
-        logger.info("Пользователь %s написал: %s", user_info, text)
-        # Инициализация состояния, если вдруг нет
+        logger.debug("User info: %s", user_info)
+
         if uid not in user_states:
             user_states[uid] = {"disclaimer_shown": False, "accepted_disclaimer": False}
 
-        # Если дисклеймер не принят — обрабатываем отдельно
+        # Disclaimer flow
         if not user_states[uid].get("accepted_disclaimer", False):
             if text == "✅ Продолжить":
                 user_states[uid]["accepted_disclaimer"] = True
                 keyboard = [["🥤 Безалкогольные"], ["🎭 Настроение", "📖 Рецепты"]]
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 await update.message.reply_text(
-                    "🎉 Отлично\\! Теперь я ваш персональный бармен\\!\n\n"
-                    "💬 Просто напишите мне, что хотите, или используйте кнопки ниже\\.\n"
-                    "🍸 Например: 'Рецепт мохито', 'Коктейль с джином', 'Безалкогольный напиток для вечеринки'\n"
-                    "🔍 Я знаю множество рецептов коктейлей и безалкогольных напитков\\!",
-                    reply_markup=reply_markup,
-                    parse_mode='MarkdownV2'
+                    "🎉 Отлично! Теперь я ваш персональный бармен! Выберите опцию ниже.",
+                    reply_markup=reply_markup
                 )
                 return
             elif text == "❌ Отказаться":
-                await update.message.reply_text(
-                    "😔 Жаль — если передумаете, введите /start",
-                    parse_mode='MarkdownV2'
-                )
+                await update.message.reply_text("😔 Жаль — если передумаете, введите /start")
                 return
             else:
                 keyboard = [["✅ Продолжить", "❌ Отказаться"]]
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-                await update.message.reply_text(
-                    "⚠️ Пожалуйста, сначала примите или отклоните условия\\.",
-                    reply_markup=reply_markup,
-                    parse_mode='MarkdownV2'
-                )
+                await update.message.reply_text("⚠️ Пожалуйста, сначала примите или отклоните условия.", reply_markup=reply_markup)
                 return
 
-        # Если дисклеймер принят — обрабатываем запрос через RAG pipeline
-        # Поддерживаем кнопки — преобразуем в понятный запрос
+        # Button shortcuts -> map to query
         if text == "🥤 Безалкогольные":
-            query = "Предложи освежающий безалкогольный напиток или мокктейль с рецептом"
+            query = "Предложи освежающий безалкогольный напиток или моктейль с рецептом"
         elif text == "🎭 Настроение":
-            # Показываем меню настроений
             keyboard = [
                 ["😊 Веселое", "😌 Спокойное"],
                 ["🔥 Энергичное", "💭 Романтичное"],
@@ -178,16 +141,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ["🔙 Назад к меню"]
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text(
-                "🎭 Выберите ваше настроение, и я подберу идеальный коктейль:",
-                reply_markup=reply_markup,
-                parse_mode='MarkdownV2'
-            )
+            await update.message.reply_text("🎭 Выберите настроение:", reply_markup=reply_markup)
             return
         elif text == "📖 Рецепты":
             query = "Покажи рецепт популярного барного напитка с пошаговым приготовлением"
-
-        # Обработка выбора настроения
         elif text == "😊 Веселое":
             query = "Предложи яркий, освежающий напиток для хорошего настроения и праздника"
         elif text == "😌 Спокойное":
@@ -201,151 +158,145 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == "🌊 Расслабленное":
             query = "Предложи легкий, освежающий напиток для расслабленного настроения"
         elif text == "🔙 Назад к меню":
-            # Возвращаемся к основному меню
             keyboard = [["🥤 Безалкогольные"], ["🎭 Настроение", "📖 Рецепты"]]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text(
-                "🍸 Главное меню бармена:",
-                reply_markup=reply_markup,
-                parse_mode='MarkdownV2'
-            )
+            await update.message.reply_text("🍸 Главное меню бармена:", reply_markup=reply_markup)
             return
 
+        # ------------- call local orchestrator (synchronous) in threadpool -------------
         loop = asyncio.get_running_loop()
+        try:
+            # pass args directly to avoid lambda closure issues
+            resp = await loop.run_in_executor(None, orch_query_sync, uid, query)
+        except Exception as e:
+            logger.exception("Local orchestrator call failed: %s", e)
+            resp = None
 
-        resp = await loop.run_in_executor(None, lambda: orch_query_sync(uid, query))
+        # If local orchestrator did not return anything, try remote ORCH_URL as fallback (optional)
+        if not resp and ORCH_URL:
+            try:
+                r = requests.post(ORCH_URL, json={"user_id": uid, "text": query, "k": 3}, timeout=30)
+                if r.status_code == 200:
+                    resp = r.json()
+                else:
+                    logger.warning("Remote orchestrator returned status %s %s", r.status_code, r.text)
+            except Exception as e:
+                logger.exception("Remote orchestrator call failed: %s", e)
 
-        if resp.get("blocked"):
-            logger.info("Запрос %s заблокирован модерацией: %s", uid, resp.get("reason"))
-            logger.info("Запрос от %s заблокирован модерацией: %s", user_info, resp.get("reason"))
-            await update.message.reply_text(
-                escape_markdown_v2(answer),
-                parse_mode='MarkdownV2'
-            )
+        if not resp:
+            # Nothing returned from orchestrator
+            answer = "Извините, сейчас сервис недоступен. Попробуйте позже."
+            formatted_answer = format_bartender_response(answer)
+            await update.message.reply_text(formatted_answer)
             return
 
-        formatted_answer = format_bartender_response(answer)
-        await update.message.reply_text(
-            formatted_answer,
-            parse_mode='MarkdownV2'
-        )
+        # Handle moderation / blocked
+        if resp.get("blocked"):
+            reason = resp.get("reason", "Неизвестная причина")
+            logger.info("Запрос %s заблокирован модерацией: %s", uid, reason)
+            await update.message.reply_text(escape_markdown_v2(f"🚫 Запрос заблокирован модерацией: {reason}"))
+            return
 
-        logger.info("Ответ отправлен пользователю %s: %s", uid, answer[:200] + "..." if len(answer) > 200 else answer)
-        logger.info("Ответ отправлен пользователю %s: %s", user_info, answer[:200] + "..." if len(answer) > 200 else answer)
-        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", uid, resp.get("retrieved_count"))
-        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", user_info, resp.get("retrieved_count"))
+        # Extract answer from resp reliably
+        # Possible structures handled: {'answer': 'text'} or {'result': {'answer': ...}} or {'result': {'answer': {...}}}
+        answer_candidate = None
+        if isinstance(resp, dict):
+            # top-level 'answer'
+            answer_candidate = resp.get("answer") or resp.get("text") or None
+            # nested 'result' -> 'answer'
+            if not answer_candidate and isinstance(resp.get("result"), dict):
+                rres = resp["result"]
+                answer_candidate = rres.get("answer") or rres.get("text") or None
+        else:
+            # fallback string
+            answer_candidate = str(resp)
+
+        # If answer is a structured model response (dict/list) try to extract first string leaf
+        def find_first_str(obj):
+            if obj is None:
+                return None
+            if isinstance(obj, str):
+                return obj
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    s = find_first_str(v)
+                    if s:
+                        return s
+            if isinstance(obj, list):
+                for v in obj:
+                    s = find_first_str(v)
+                    if s:
+                        return s
+            return None
+
+        if isinstance(answer_candidate, (dict, list)):
+            answer_text = find_first_str(answer_candidate) or ""
+        else:
+            answer_text = str(answer_candidate) if answer_candidate is not None else ""
+
+        if not answer_text:
+            answer_text = "Извините, не удалось сгенерировать ответ. Попробуйте переформулировать запрос."
+
+        # Format and send
+        formatted_answer = format_bartender_response(answer_text)
+        await update.message.reply_text(formatted_answer)
+
+        logger.info("Ответ отправлен пользователю %s", uid)
+        logger.debug("Answer preview: %s", answer_text[:300])
+
     except Exception as e:
         logger.exception("Ошибка в handle_message: %s", e)
         try:
-            await update.message.reply_text(
-                "😅 Извините, что\\-то пошло не так\\. Попробуйте ещё раз\\.",
-                parse_mode='MarkdownV2'
-            )
+            await update.message.reply_text("😅 Извините, что-то пошло не так. Попробуйте ещё раз.")
         except Exception:
             pass
-    try:
-        r = requests.post(ORCH_URL, json={"user_id": uid, "text": text, "k": 3}, timeout=30)
-        if r.status_code != 200:
-            await update.message.reply_text("Сервис временно недоступен.")
-            return
-        j = r.json()
-        if j.get("blocked"):
-            await update.message.reply_text("Извините, я не могу помочь с этим запросом.")
-            return
-        # result contains rag / model output (raw)
-        result = j.get("result", {})
-        # RAG returns {'answer': model_json, 'retrieved': [...]}
-        answer = result.get("answer")
-        # If answer is JSON (raw model response) try to extract readable text:
-        text_out = None
-        if isinstance(answer, dict):
-            # try to find string leaf
-            def find_first(obj):
-                if isinstance(obj, str): return obj
-                if isinstance(obj, dict):
-                    for v in obj.values():
-                        s = find_first(v)
-                        if s: return s
-                if isinstance(obj, list):
-                    for v in obj:
-                        s = find_first(v)
-                        if s: return s
-                return None
-            text_out = find_first(answer) or str(answer)
-        else:
-            text_out = str(answer)
-        await update.message.reply_text(text_out)
-    except Exception as e:
-        logger.exception("Error sending to orchestrator: %s", e)
-        await update.message.reply_text("Ошибка при обращении к сервису.")
 
+# -----------------------
+# Main
+# -----------------------
 def main():
     logger.info("🚀 Запуск бота...")
+
+    # Initialize auth once at startup (fail early)
+    try:
+        start_auth()
+    except Exception as e:
+        logger.exception("Авторизация не удалась: %s", e)
+        logger.error("Завершаю запуск — исправьте конфигурацию аутентификации и перезапустите.")
+        return
+
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     force_rebuild = os.getenv("FORCE_REBUILD_INDEX", "").lower() in ["true", "1", "yes"]
 
     try:
         if not force_rebuild:
             logger.info("🔄 Проверяю наличие новых файлов для инкрементального обновления...")
-
             try:
                 incremental_success = update_rag_incremental("vedroo")
                 if incremental_success:
                     logger.info("✅ Инкрементальное обновление выполнено успешно")
                 else:
                     logger.warning("⚠️ Инкрементальное обновление не удалось, выполняю полную перестройку")
-                    raise Exception("Incremental update failed")
+                    # full rebuild
+                    build_docs_from_s3("vedroo", "")
             except Exception as e:
-                logger.info("📚 Выполняю полную перестройку индекса...")
+                logger.exception("Ошибка инкрементального обновления, делаю полную перестройку: %s", e)
                 build_docs_from_s3("vedroo", "")
-                logger.info("📚 Новый индекс создан из бакета")
 
-            index, vectors, docs = load_index()
-            logger.info("📚 Векторный индекс загружен (%d документов)", len(docs))
         else:
             logger.info("🔄 Принудительная перестройка индекса...")
-            build_index(docs)
-            logger.info("📚 Новый индекс создан из бакета")
-    except Exception as e:
-        logger.error("❌ Ошибка при работе с индексом: %s", e)
-        logger.info("📚 Создаю новый векторный индекс из S3 бакета...")
-        logger.info("🔍 Поиск файлов в бакете vedroo...")
+            build_docs_from_s3("vedroo", "")
 
-        # Сначала проверим, что есть в бакете
+        # Попытка загрузить индекс (если он есть)
         try:
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            import boto3
-            from settings import S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
+            index, vectors, docs = load_index()
+            logger.info("📚 Векторный индекс загружен (%d документов)", len(docs))
+        except Exception as e:
+            logger.warning("FAISS индекс не найден/не удалось загрузить: %s", e)
+            logger.info("Можно продолжить — поиск будет недоступен до сборки индекса.")
+    except Exception as e:
+        logger.exception("❌ Ошибка при работе с индексом: %s", e)
 
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=S3_ENDPOINT,
-                aws_access_key_id=S3_ACCESS_KEY,
-                aws_secret_access_key=S3_SECRET_KEY,
-            )
-            response = s3.list_objects_v2(Bucket="vedroo", Prefix="")
-            contents = response.get("Contents") or []
-
-            logger.info("📁 Найдено файлов в бакете: %d", len(contents))
-            csv_count = sum(1 for obj in contents if obj.get("Key", "").lower().endswith('.csv'))
-            pdf_count = sum(1 for obj in contents if obj.get("Key", "").lower().endswith('.pdf'))
-            other_count = len(contents) - csv_count - pdf_count
-
-            logger.info("📊 CSV файлов: %d", csv_count)
-            logger.info("📄 PDF файлов: %d", pdf_count)
-            logger.info("📋 Других файлов: %d", other_count)
-
-            # Показываем детали файлов
-            for obj in contents:
-                key = obj.get("Key")
-                size = obj.get("Size")
-                if key:
-                    logger.info("📎 Файл: %s (%d байт)", key, size)
-
-        except Exception as bucket_error:
-            logger.warning("⚠️ Не удалось проверить содержимое бакета: %s", bucket_error)
-
-        
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
