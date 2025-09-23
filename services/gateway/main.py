@@ -138,8 +138,24 @@ class ServiceClient:
             else:
                 raise HTTPException(status_code=400, detail=f"Неподдерживаемый HTTP метод: {method}")
 
-            response.raise_for_status()
-            return response.json()
+            # пробуем распарсить JSON, даже если статус не 2xx
+            try:
+                payload = response.json()
+            except Exception:
+                payload = None
+
+            # Если статус не 2xx — пробрасываем как HTTPException с деталями
+            if response.status_code < 200 or response.status_code >= 300:
+                detail = None
+                if isinstance(payload, dict):
+                    # стандартные поля
+                    detail = payload.get("detail") or payload.get("error") or str(payload)
+                if not detail:
+                    detail = response.text.strip() or f"HTTP {response.status_code}"
+                logger.error(f"{service_name} {endpoint} -> {response.status_code}: {detail}")
+                raise HTTPException(status_code=response.status_code, detail=detail)
+
+            return payload if payload is not None else {}
 
         except httpx.TimeoutException:
             logger.error(f"Таймаут при обращении к сервису {service_name}")
@@ -147,6 +163,9 @@ class ServiceClient:
         except httpx.HTTPError as e:
             logger.error(f"HTTP ошибка при обращении к сервису {service_name}: {e}")
             raise HTTPException(status_code=503, detail=f"Сервис {service_name} недоступен")
+        except HTTPException:
+            # уже подготовленный осмысленный HTTPException
+            raise
         except Exception as e:
             logger.error(f"Ошибка при обращении к сервису {service_name}: {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка вызова сервиса {service_name}")
@@ -315,6 +334,11 @@ async def ask_bartender(request: BartenderQuery):
         await safe_log("INFO", f"Ответ сформирован за {processing_time:.2f}s для пользователя {request.user_id}", user_id=request.user_id)
         return response
 
+    except HTTPException as he:
+        # сохраняем и пробрасываем уже осмысленную ошибку сервиса
+        await safe_log("ERROR", f"Ошибка при обработке запроса: {he.detail}", user_id=request.user_id)
+        logger.error(f"Ошибка при обработке запроса (HTTP {he.status_code}): {he.detail}")
+        raise he
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds()
         # Пытаемся залогировать ошибку, но не ломаем ответ, если logging недоступен

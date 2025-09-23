@@ -14,6 +14,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 import uvicorn
+import zlib  # добавлено для стабильного хеширования user_id
 
 # Импорты из оригинального проекта
 import sys
@@ -80,7 +81,7 @@ class IndexStatus(BaseModel):
 
 class IndexRebuildRequest(BaseModel):
     """Запрос перестройки индекса"""
-    bucket: str = Field(S3_BUCKET, description="S3 бакет")
+    bucket: str = Field(S3_BUCKET, description="С3 бакет")
     prefix: str = Field(S3_PREFIX, description="Префикс файлов")
     force: bool = Field(False, description="Принудительная перестройка")
 
@@ -127,7 +128,7 @@ def invalidate_vectorstore_cache():
 
 @app.get("/")
 async def root():
-    """Корне��ой эндпоинт"""
+    """Корневой эндпоинт"""
     return {
         "service": "RAG Service",
         "version": "1.0.0",
@@ -166,10 +167,19 @@ async def generate_answer(request: QueryRequest):
         # Импорт функции для ответа (избегаем циклических импортов)
         from rag_yandex_nofaiss import async_answer_user_query
 
+        # Безопасная конвертация user_id в int (стабильный CRC32 для строковых id)
+        user_id_int = 0
+        if request.user_id is not None:
+            try:
+                user_id_int = int(request.user_id)  # если уже число в строке
+            except Exception:
+                user_id_int = zlib.crc32(str(request.user_id).encode("utf-8")) & 0x7fffffff
+        logger.info(f"user_id_int={user_id_int} (исходный user_id={request.user_id})")
+
         # Вызываем функцию ответа
         answer, meta = await async_answer_user_query(
             user_text=request.query,
-            user_id=int(request.user_id or 0),
+            user_id=user_id_int,
             k=request.k
         )
 
@@ -297,7 +307,7 @@ async def rebuild_index(request: IndexRebuildRequest, background_tasks: Backgrou
         }
 
     except Exception as e:
-        logger.error(f"Ошибка запуск�� перестройки индекса: {e}")
+        logger.error(f"Ошибка запуска перестройки индекса: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка запуска перестройки: {str(e)}")
 
 @app.post("/index/update")
@@ -312,7 +322,7 @@ async def update_index_incremental(background_tasks: BackgroundTasks):
                     invalidate_vectorstore_cache()
                     logger.info("Инкрементальное обновление завершено успешно")
                 else:
-                    logger.warning("��нкрементальное обновление не удалось")
+                    logger.warning("Инкрементальное обновление не удалось")
             except Exception as e:
                 logger.error(f"Ошибка при инкрементальном обновлении: {e}")
 
