@@ -13,7 +13,7 @@ COPY bartender_file_handler.py .
 COPY incremental_rag.py .
 COPY yandex_api.py .
 COPY yandex_jwt_auth.py .
-COPY moderation_yandex.py .  # добавлено для модерации
+COPY moderation_yandex.py .
 
 # Копируем файлы RAG сервиса
 COPY services/rag/ ./services/rag/
