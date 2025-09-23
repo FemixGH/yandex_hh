@@ -58,7 +58,7 @@ done
 if [[ -n "${URLS[gateway]:-}" ]]; then
   echo
   echo "[TEST] Round-trip via Gateway /bartender/ask:"
-  RESP=$(curl -sS -m 15 -H 'Content-Type: application/json' -d '{"query":"рецепт Мохито","user_id":"selftest"}' "${URLS[gateway]}/bartender/ask" || true)
+  RESP=$(curl -sS -m 15 -X POST -H 'Content-Type: application/json' -d '{"query":"рецепт Мохито","user_id":"selftest"}' "${URLS[gateway]}/bartender/ask" || true)
   if echo "$RESP" | jq . >/dev/null 2>&1; then
     if echo "$RESP" | grep -qE '"answer"|"blocked"'; then
       echo "  [OK] request processed"

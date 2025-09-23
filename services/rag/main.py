@@ -21,7 +21,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from rag_yandex_nofaiss import load_vectorstore, build_index_from_bucket
-from faiss_index_yandex import semantic_search, build_index, load_index
+from faiss_index_yandex import semantic_search  # оставим только при необходимости
 from bartender_file_handler import build_bartender_index_from_bucket
 from incremental_rag import update_rag_incremental
 from settings import VECTORSTORE_DIR, S3_BUCKET, S3_PREFIX
@@ -205,33 +205,20 @@ async def semantic_search_endpoint(request: SearchRequest):
     start_time = datetime.now()
 
     try:
-        # Импорт функций для эмбеддингов
-        from yandex_api import yandex_text_embedding
+        # Используем устойчивый поиск из rag_yandex_nofaiss
+        from rag_yandex_nofaiss import semantic_search_in_memory
 
-        # Получаем эмбеддинг запроса
-        query_embedding = yandex_text_embedding(request.query)
-        if not query_embedding:
-            raise HTTPException(status_code=500, detail="Не удалось получить эмбеддинг запроса")
+        results = semantic_search_in_memory(request.query, k=request.k)
 
-        # Получаем векторное хранилище
-        vectorstore = await get_vectorstore()
-        matrix, docs = vectorstore
-
-        # Выполняем поиск
-        results = semantic_search(
-            query_embedding,
-            matrix,
-            docs,
-            k=request.k,
-            threshold=request.threshold
-        )
+        # Применяем порог, если указан
+        filtered = [r for r in results if float(r.get("score", 0.0)) >= float(request.threshold or 0.0)]
 
         search_results = []
-        for doc, score in results:
+        for d in filtered:
             search_results.append(SearchResult(
-                text=doc.get("content", ""),
-                score=float(score),
-                metadata=doc.get("metadata", {})
+                text=d.get("text", "") or d.get("content", ""),
+                score=float(d.get("score", 0.0)),
+                metadata=d.get("meta") or d.get("metadata", {})
             ))
 
         processing_time = (datetime.now() - start_time).total_seconds()

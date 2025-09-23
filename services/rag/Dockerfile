@@ -13,6 +13,7 @@ COPY bartender_file_handler.py .
 COPY incremental_rag.py .
 COPY yandex_api.py .
 COPY yandex_jwt_auth.py .
+COPY moderation_yandex.py .  # добавлено для модерации
 
 # Копируем файлы RAG сервиса
 COPY services/rag/ ./services/rag/
@@ -28,7 +29,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Создаем директории
 RUN mkdir -p /app/vectorstore /app/faiss_index_yandex
 
-# Экспонируем порт
+# Экспортируем порт
 EXPOSE 8002
 
 # Запускаем приложение
