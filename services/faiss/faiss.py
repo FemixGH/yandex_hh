@@ -139,12 +139,19 @@ def build_docs_from_s3(bucket: str, prefix: str = "", max_chunk_chars: int = 150
 
 
 # ===== FAISS Индекс =====
-def build_index(docs: List[dict], model_uri: Optional[str] = None) -> bool:
+def build_index(docs: List[dict], model_uri: Optional[str] = None) -> int:
     try:
         texts = [d["text"] for d in docs]
         embeddings_list = yandex_batch_embeddings(texts, model_uri=model_uri)
         embeddings = np.array(embeddings_list, dtype='float32')
+
+        # <-- HERE: define n_docs and dim
+        if embeddings.ndim != 2:
+            raise RuntimeError("Embeddings shape unexpected: %r" % (embeddings.shape,))
+        n_docs = embeddings.shape[0]
         dim = embeddings.shape[1]
+
+        logger.info("Computed embeddings: n_docs=%d, dim=%d", n_docs, dim)
 
         faiss.normalize_L2(embeddings)
         index = faiss.IndexFlatIP(dim)
@@ -152,13 +159,26 @@ def build_index(docs: List[dict], model_uri: Optional[str] = None) -> bool:
 
         faiss.write_index(index, IDX_FILE)
         np.save(VECTORS_FILE, embeddings)
+
+        # Save pickle metadata
         with open(METADATA_FILE, "wb") as f:
             pickle.dump(docs, f)
-        logger.info("FAISS индекс построен: %d документов", len(docs))
-        return True
+
+        # Also save a JSON copy for incremental module
+        try:
+            metadata_json_path = os.path.join(VECTORSTORE_DIR, "metadata.json")
+            with open(metadata_json_path, "w", encoding="utf-8") as jf:
+                json.dump(docs, jf, ensure_ascii=False, indent=2)
+            logger.info("Saved metadata.json for incremental compatibility: %s", metadata_json_path)
+        except Exception as je:
+            logger.exception("Failed to save metadata.json: %s", je)
+
+        logger.info("✅ FAISS индекс построен: %d документов", n_docs)
+        return n_docs
     except Exception as e:
         logger.exception("Ошибка при построении FAISS индекса: %s", e)
-        return False
+        return 0
+
 
 
 def load_index() -> Tuple[faiss.Index, np.ndarray, List[dict]]:

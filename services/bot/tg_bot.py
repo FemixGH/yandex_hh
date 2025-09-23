@@ -5,7 +5,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from settings import TELEGRAM_TOKEN, ORCH_URL as ORCH_URL_RAW
 from services.faiss.faiss import build_index, load_index, build_docs_from_s3
-from services.rag.incremental_rag import update_rag_incremental
+from services.rag.incremental_rag import update_rag_incremental, save_incremental_state, get_bucket_files
 from services.orchestrator.orchestrator import query as orch_query_sync
 from services.auth.auth import start_auth
 import logging
@@ -14,6 +14,7 @@ import asyncio
 import re
 import requests
 from urllib.parse import urlparse
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -271,22 +272,48 @@ def main():
         if not force_rebuild:
             logger.info("🔄 Проверяю наличие новых файлов для инкрементального обновления...")
             try:
-                incremental_success = update_rag_incremental("vedrooo2")
+                incremental_success = update_rag_incremental("vedroo")
                 if incremental_success:
                     logger.info("✅ Инкрементальное обновление выполнено успешно")
                 else:
                     logger.warning("⚠️ Инкрементальное обновление не удалось, выполняю полную перестройку")
                     # full rebuild
-                    docs = build_docs_from_s3("vedrooo2", "")
+                    bucket_name = "vedroo"
+                    docs = build_docs_from_s3(bucket_name, "")
                     if docs:
-                        build_index(docs)
+                        ok = build_index(docs)
+                        if ok:
+                            # --- Build mapping of processed source files -> last_modified (ISO) ---
+                            try:
+                                # get list of files currently in bucket (key -> info)
+                                bucket_files = {f["key"]: f for f in get_bucket_files(bucket_name)}
+                                processed = {}
+                                for d in docs:
+                                    src = d.get("meta", {}).get("source")
+                                    if not src:
+                                        continue
+                                    if src in processed:
+                                        continue
+                                    info = bucket_files.get(src)
+                                    processed[src] = {
+                                        "hash": None,  # we don't compute hash here; last_modified is enough for incremental check
+                                        "last_modified": info.get("last_modified") if info else None
+                                    }
+
+                                state = {"processed_files": processed, "last_update": datetime.now().isoformat()}
+                                save_incremental_state(state)
+                                logger.info("Incremental state updated with %d files after full rebuild", len(processed))
+                            except Exception as e:
+                                logger.exception("Failed to update incremental state after full rebuild: %s", e)
+                        else:
+                            logger.error("build_index failed during full rebuild")
             except Exception as e:
                 logger.exception("Ошибка инкрементального обновления, делаю полную перестройку: %s", e)
-                build_docs_from_s3("vedrooo2", "")
+                build_docs_from_s3("vedroo", "")
 
         else:
             logger.info("🔄 Принудительная перестройка индекса...")
-            build_docs_from_s3("vedrooo2", "")
+            build_docs_from_s3("vedroo", "")
 
         # Попытка загрузить индекс (если он есть)
         try:

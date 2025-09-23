@@ -7,7 +7,7 @@ from typing import List, Dict, Tuple
 import boto3
 import numpy as np
 from datetime import datetime
-
+import tempfile
 from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 from services.rag.embending import yandex_batch_embeddings
 
@@ -16,6 +16,47 @@ logger = logging.getLogger(__name__)
 INCREMENTAL_STATE_FILE = os.path.join(VECTORSTORE_DIR, "incremental_state.json")
 VECTORS_FILE = "vectors.npy"
 METADATA_FILE = "metadata.json"
+
+# в services/rag/incremental_rag.py (в конец файла)
+
+
+def update_state_after_full_rebuild(bucket_name: str, docs: List[dict]):
+    """
+    Помечает исходные S3-файлы из docs как обработанные в incremental_state.json
+    docs — список документов с meta.source содержащим S3 key
+    """
+    try:
+        bucket_files = {f["key"]: f for f in get_bucket_files(bucket_name)}
+        processed = {}
+        for d in docs:
+            src = d.get("meta", {}).get("source")
+            if not src:
+                continue
+            if src in processed:
+                continue
+            info = bucket_files.get(src)
+            processed[src] = {
+                "hash": None,
+                "last_modified": info.get("last_modified") if info else None
+            }
+        state = {"processed_files": processed, "last_update": datetime.now().isoformat()}
+
+        # atomic write
+        path = INCREMENTAL_STATE_FILE
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            # fallback
+            save_incremental_state(state)
+        logger.info("Updated incremental_state.json with %d files", len(processed))
+    except Exception as e:
+        logger.exception("Failed to update incremental state after full rebuild: %s", e)
+
+
 
 def get_file_hash(content: bytes) -> str:
     """Вычисляет MD5 хеш содержимого файла"""
