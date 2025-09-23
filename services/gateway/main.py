@@ -174,6 +174,21 @@ class ServiceClient:
 # Глобальный клиент
 service_client = ServiceClient()
 
+# Безопасное логирование: ошибки логов не должны ломать основной поток
+async def safe_log(level: str, message: str, service: str = "gateway", **extra):
+    try:
+        await service_client.call_service(
+            "logging", "/log", "POST",
+            data={
+                "level": level,
+                "message": message,
+                "service": service,
+                **({"user_id": extra.get("user_id")} if extra.get("user_id") is not None else {})
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Логирование недоступно: {e}")
+
 # ========================
 # API Эндпоинты
 # ========================
@@ -234,16 +249,8 @@ async def ask_bartender(request: BartenderQuery):
     start_time = datetime.now()
 
     try:
-        # Логируем запрос
-        await service_client.call_service(
-            "logging", "/log", "POST",
-            data={
-                "level": "INFO",
-                "message": f"Получен запрос от пользователя {request.user_id}: {request.query}",
-                "service": "gateway",
-                "user_id": request.user_id
-            }
-        )
+        # Не блокируем основной поток, если logging недоступен
+        await safe_log("INFO", f"Получен запрос от пользователя {request.user_id}: {request.query}", user_id=request.user_id)
 
         # Модерация входящего запроса
         if request.with_moderation:
@@ -304,36 +311,14 @@ async def ask_bartender(request: BartenderQuery):
             sources=rag_response.get("sources", [])
         )
 
-        # Логируем успешный ответ
-        await service_client.call_service(
-            "logging", "/log", "POST",
-            data={
-                "level": "INFO",
-                "message": f"Ответ сформирован за {processing_time:.2f}s для пользователя {request.user_id}",
-                "service": "gateway",
-                "user_id": request.user_id,
-                "processing_time": processing_time
-            }
-        )
-
+        # Безопасное логирование успешного ответа
+        await safe_log("INFO", f"Ответ сформирован за {processing_time:.2f}s для пользователя {request.user_id}", user_id=request.user_id)
         return response
 
     except Exception as e:
         processing_time = (datetime.now() - start_time).total_seconds()
-
-        # Логируем ошибку
-        await service_client.call_service(
-            "logging", "/log", "POST",
-            data={
-                "level": "ERROR",
-                "message": f"Ошибка при обработке запроса: {str(e)}",
-                "service": "gateway",
-                "user_id": request.user_id,
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
-        )
-
+        # Пытаемся залогировать ошибку, но не ломаем ответ, если logging недоступен
+        await safe_log("ERROR", f"Ошибка при обработке запроса: {str(e)}", user_id=request.user_id)
         logger.error(f"Ошибка при обработке запроса: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки запроса: {str(e)}")
 
