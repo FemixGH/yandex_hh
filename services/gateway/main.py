@@ -65,6 +65,11 @@ SERVICES_CONFIG = {
     "logging": {
         "url": os.getenv("LOGGING_SERVICE_URL", "http://logging-service:8005"),
         "timeout": 5.0
+    },
+    # Добавлен сервис Lockbox
+    "lockbox": {
+        "url": os.getenv("LOCKBOX_SERVICE_URL", "http://lockbox-service:8006"),
+        "timeout": 15.0
     }
 }
 
@@ -386,6 +391,23 @@ async def yandex_proxy(path: str, request):
         data = None
 
     return await service_client.call_service("yandex", f"/{path}", method, data, params)
+
+# Проксирование запросов к Lockbox сервису
+@app.api_route("/lockbox/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def lockbox_proxy(path: str, request):
+    """Проксирование запросов к Lockbox сервису"""
+    method = request.method
+    params = dict(request.query_params)
+
+    if method in ["POST", "PUT"]:
+        try:
+            data = await request.json()
+        except:
+            data = None
+    else:
+        data = None
+
+    return await service_client.call_service("lockbox", f"/{path}", method, data, params)
 
 # ========================
 # Обработчики ошибок

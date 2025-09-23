@@ -123,6 +123,7 @@ services:
     environment:
       - LOCKBOX_SERVICE_HOST=0.0.0.0
       - LOCKBOX_SERVICE_PORT=8006
+      - SECRET_ID=e6q8vbbldqor67ogn9ne
       - IAM_TOKEN=${IAM_TOKEN}
     restart: unless-stopped
     networks:
