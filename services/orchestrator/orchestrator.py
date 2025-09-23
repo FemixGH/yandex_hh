@@ -4,7 +4,7 @@ import logging
 import requests
 from typing import Dict
 from services.moderation.moderation import pre_moderate_input
-from services.rag.rag_yandex_nofaiss import answer_user_query_sync
+from services.rag.rag import answer_user_query_sync
 
 logger = logging.getLogger(__name__)
 

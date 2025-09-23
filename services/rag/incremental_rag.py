@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime
 
 from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
-from services.rag.yandex_api import yandex_batch_embeddings
+from services.rag.embending import yandex_batch_embeddings
 
 logger = logging.getLogger(__name__)
 

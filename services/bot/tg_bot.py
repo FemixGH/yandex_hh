@@ -4,8 +4,7 @@
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from settings import TELEGRAM_TOKEN, ORCH_URL
-from services.rag.rag_yandex_nofaiss import async_answer_user_query, load_vectorstore, build_index_from_bucket
-from services.rag.bartender_file_handler import build_bartender_index_from_bucket
+from services.faiss.faiss import build_index, load_index, build_docs_from_s3
 from services.rag.incremental_rag import update_rag_incremental
 from services.orchestrator.orchestrator import query as orch_query_sync
 import logging
@@ -298,14 +297,14 @@ def main():
                     raise Exception("Incremental update failed")
             except Exception as e:
                 logger.info("📚 Выполняю полную перестройку индекса...")
-                build_bartender_index_from_bucket("vedroo", "")
+                build_docs_from_s3("vedroo", "")
                 logger.info("📚 Новый индекс создан из бакета")
 
-            mat, docs = load_vectorstore()
+            index, vectors, docs = load_index()
             logger.info("📚 Векторный индекс загружен (%d документов)", len(docs))
         else:
             logger.info("🔄 Принудительная перестройка индекса...")
-            build_bartender_index_from_bucket("vedroo", "")
+            build_index(docs)
             logger.info("📚 Новый индекс создан из бакета")
     except Exception as e:
         logger.error("❌ Ошибка при работе с индексом: %s", e)
@@ -346,8 +345,6 @@ def main():
         except Exception as bucket_error:
             logger.warning("⚠️ Не удалось проверить содержимое бакета: %s", bucket_error)
 
-        build_bartender_index_from_bucket("vedroo", "")
-        logger.info("📚 Новый индекс создан из бакета")
         
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -2,19 +2,16 @@
 import os
 import json
 import time
-import pickle
 import logging
-import numpy as np
 import asyncio
-from typing import List, Dict, Tuple, Optional
+from typing import Tuple
 import os
-from services.faiss.faiss_index_yandex import build_index, load_index, semantic_search, VECTORS_FILE, METADATA_FILE
-from services.rag.yandex_api import yandex_batch_embeddings, yandex_completion
+from services.faiss.faiss import semantic_search
+from services.rag.embending import yandex_completion
 from services.moderation.moderation import post_moderate_output, extract_text_from_yandex_completion
-from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET
+from settings import VECTORSTORE_DIR
 from fastapi import FastAPI
 from pydantic import BaseModel
-from services.rag.incremental_rag import update_rag_incremental
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -38,11 +35,6 @@ def audit_log(entry: dict):
 # --- RAG pipeline: answer_user_query (sync) + async wrapper ---
 def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
     meta = {"user_id": user_id, "query": user_text}
-    try:
-        update_ok = update_rag_incremental(S3_BUCKET)
-        logger.info("Incremental update status: %s", update_ok)
-    except Exception as e:
-        logger.error("update_rag_incremental failed: %s", e)
 
     # 2. Сразу используем FAISS для поиска
     try:
