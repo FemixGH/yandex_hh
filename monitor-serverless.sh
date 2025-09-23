@@ -27,7 +27,12 @@ declare -A URLS
 echo "[INFO] Resolving service URLs from Serverless Containers..."
 for SVC in "${SERVICES[@]}"; do
   if URL_JSON=$(yc serverless container get --name "$SVC" --format json 2>/dev/null || true); then
-    URLS[$SVC]=$(echo "$URL_JSON" | jq -r '.url // empty')
+    RAW_URL=$(echo "$URL_JSON" | jq -r '.url // empty')
+    # Trim trailing slash if present
+    if [[ -n "$RAW_URL" ]]; then
+      RAW_URL=${RAW_URL%/}
+    fi
+    URLS[$SVC]="$RAW_URL"
   else
     URLS[$SVC]=
   fi
@@ -78,4 +83,3 @@ if $FOLLOW_LOGS; then
   trap 'echo; echo "[LOGS] Stopping..."; kill $PIDS >/dev/null 2>&1 || true; wait >/dev/null 2>&1 || true' INT TERM
   wait
 fi
-
