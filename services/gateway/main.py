@@ -13,7 +13,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -345,6 +345,28 @@ async def ask_bartender(request: BartenderQuery):
         await safe_log("ERROR", f"Ошибка при обработке запроса: {str(e)}", user_id=request.user_id)
         logger.error(f"Ошибка при обработке запроса: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки запроса: {str(e)}")
+
+@app.post("/", response_model=BartenderResponse)
+async def ask_bartender_root(body: Dict = Body(default=None)):
+    """Fallback для некоторых окружений, где путь может обрезаться до '/'.
+    Принимает тот же JSON, что и /bartender/ask, и перенаправляет в ту же бизнес-логику.
+    """
+    try:
+        req = BartenderQuery(**(body or {}))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Use /bartender/ask and provide JSON: {query, user_id?, k?, with_moderation?}")
+    return await ask_bartender(req)
+
+@app.get("/bartender/ask", response_model=BartenderResponse)
+async def ask_bartender_get(
+    query: str = Query(..., min_length=1, max_length=1000),
+    user_id: Optional[str] = None,
+    k: int = Query(3, ge=1, le=10),
+    with_moderation: bool = True,
+):
+    """GET-алиас для простых проверок из браузера/скриптов без тела запроса."""
+    req = BartenderQuery(query=query, user_id=user_id, k=k, with_moderation=with_moderation)
+    return await ask_bartender(req)
 
 # Проксирование запросов к сервисам
 @app.api_route("/telegram/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
