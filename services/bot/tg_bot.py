@@ -7,8 +7,10 @@ from settings import TELEGRAM_TOKEN, ORCH_URL
 from services.rag.rag_yandex_nofaiss import async_answer_user_query, load_vectorstore, build_index_from_bucket
 from services.rag.bartender_file_handler import build_bartender_index_from_bucket
 from services.rag.incremental_rag import update_rag_incremental
+from services.orchestrator.orchestrator import query as orch_query_sync
 import logging
 import os
+import asyncio
 import re
 import sys
 from services.auth.auth import start_auth
@@ -210,56 +212,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Специальная обработка запросов о расслаблении
-        elif any(word in text.lower() for word in ["расслаб", "отдохн", "релакс", "устал", "стресс"]):
-            query = "Предложи расслабляющий напиток для снятия стресса и отдыха"
+        loop = asyncio.get_running_loop()
 
-        # Специальная обработка запросов о бюджетных коктейлях
-        elif any(word in text.lower() for word in ["дешев", "бюджет", "недорог", "простой", "экономн"]):
-            query = f"Предложи простой и бюджетный коктейль: {text}"
+        resp = await loop.run_in_executor(None, lambda: orch_query_sync(uid, query))
 
-        # Специальная обработка запросов с энергетиками
-        elif any(word in text.lower() for word in ["редбул", "red bull", "энергетик", "энергия", "бодрящ"]):
-            query = f"Предложи энергичный коктейль или напиток: {text}"
-        uid = update.effective_user.id
-        text = (update.message.text or "").strip()
-        logger.info("Пользователь %s написал: %s", uid, text)
-
-        # Инициализация состояния, если вдруг нет
-        if uid not in user_states:
-            user_states[uid] = {"disclaimer_shown": False, "accepted_disclaimer": False}
-
-            # Если дисклеймер не принят — обрабатываем отдельно
-
-
-            # Вызов RAG pipeline (async wrapper)
-            # async_answer_user_query выполняет pre/post модерацию и находит ответы в vectorstore
-        answer, meta = await async_answer_user_query(query, uid, k=3)
-
-            # Если модерация заблокировала — meta содержит блокировку
-        if meta.get("blocked"):
-            logger.info("Запрос %s заблокирован модерацией: %s", uid, meta.get("reason"))
-            logger.info("Запрос от %s заблокирован модерацией: %s", user_info, meta.get("reason"))
+        if resp.get("blocked"):
+            logger.info("Запрос %s заблокирован модерацией: %s", uid, resp.get("reason"))
+            logger.info("Запрос от %s заблокирован модерацией: %s", user_info, resp.get("reason"))
             await update.message.reply_text(
                 escape_markdown_v2(answer),
                 parse_mode='MarkdownV2'
             )
             return
 
-            # Иначе отправляем ответ с Markdown форматированием
         formatted_answer = format_bartender_response(answer)
         await update.message.reply_text(
             formatted_answer,
             parse_mode='MarkdownV2'
         )
 
-
-            # Логируем отправленный ответ
         logger.info("Ответ отправлен пользователю %s: %s", uid, answer[:200] + "..." if len(answer) > 200 else answer)
         logger.info("Ответ отправлен пользователю %s: %s", user_info, answer[:200] + "..." if len(answer) > 200 else answer)
-        # Логируем метаданные для диагностики
-        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", uid, meta.get("retrieved_count"))
-        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", user_info, meta.get("retrieved_count"))
+        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", uid, resp.get("retrieved_count"))
+        logger.info("Метаданные ответа для пользователя %s: retrieved=%s", user_info, resp.get("retrieved_count"))
     except Exception as e:
         logger.exception("Ошибка в handle_message: %s", e)
         try:
