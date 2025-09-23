@@ -7,6 +7,7 @@
 import asyncio
 import aiohttp
 import logging
+import os
 from typing import Dict, Any, Optional
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
@@ -17,7 +18,8 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Настройки API
-API_BASE_URL = "http://localhost:8000"  # URL вашего FastAPI сервера
+# API_BASE_URL можно переопределить через переменную окружения API_BASE_URL
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000").rstrip('/')
 API_TIMEOUT = 30
 
 # Состояние пользователей
@@ -112,7 +114,7 @@ def format_bartender_response(text: str) -> str:
     text = re.sub(r'\b(\d+\s*°C|\d+\s*градус|\d+\s*мин|\d+\s*сек)\b', r'`\1`', text)
 
     # Выделяем количества ингредиентов
-    text = re.sub(r'\b(\d+\s*мл|\d+\s*г|\d+\s*ст\\\.?\s*л\\\.?|\d+\s*ч\\\.?\s*л\\\.?)\b', r'`\1`', text)
+    text = re.sub(r'\b(\d+\s*мл|\d+\s*г|\d+\s*ст\\\.??\s*л\\\.??|\d+\s*ч\\\.??\s*л\\\.??)\b', r'`\1`', text)
 
     return text
 
@@ -257,7 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [["🥤 Безалкогольные"], ["🎭 Настроение", "📖 Рецепты"]]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text(
-                "🍸 Хотите попробовать что\\-то еще\\?",
+                "🍸 Хотите попробовать что\-то еще\\?",
                 reply_markup=reply_markup,
                 parse_mode='MarkdownV2'
             )
@@ -272,7 +274,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Ошибка в handle_message: %s", e)
         try:
             await update.message.reply_text(
-                "😅 Извините, что\\-то пошло не так\\. Попробуйте ещё раз\\.",
+                "😅 Извините, что\-то пошло не так\\. Попробуйте ещё раз\\.",
                 parse_mode='MarkdownV2'
             )
         except Exception:
@@ -367,12 +369,32 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🤖 Бот настроен, запускаю...")
+    logger.info("🤖 Бот настроен")
     logger.info(f"🌐 API сервер: {API_BASE_URL}")
 
-    # Запускаем бота
+    # Выбор режима запуска: webhook или polling
+    webhook_base = os.getenv("TELEGRAM_WEBHOOK_BASE", "").strip()
+    webhook_path = os.getenv("TELEGRAM_WEBHOOK_PATH", TELEGRAM_TOKEN or "webhook").strip()
+    listen_addr = os.getenv("LISTEN", "0.0.0.0")
+    port = int(os.getenv("PORT", "8080"))
+    secret_token = os.getenv("TELEGRAM_SECRET_TOKEN")
+
     try:
-        application.run_polling(drop_pending_updates=True)
+        if webhook_base:
+            # Полный URL вебхука
+            webhook_url = f"{webhook_base.rstrip('/')}/{webhook_path}"
+            logger.info("🌍 Режим webhook: %s (path=%s, listen=%s:%d)", webhook_base, webhook_path, listen_addr, port)
+            application.run_webhook(
+                listen=listen_addr,
+                port=port,
+                url_path=webhook_path,
+                webhook_url=webhook_url,
+                secret_token=secret_token,
+                drop_pending_updates=True,
+            )
+        else:
+            logger.info("🛰️ Режим polling (TELEGRAM_WEBHOOK_BASE не указан)")
+            application.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
         logger.info("🛑 Бот остановлен пользователем")
     except Exception as e:

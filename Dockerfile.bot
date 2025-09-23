@@ -10,10 +10,10 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Копирование файлов зависимостей
-COPY requirements.txt ./
+COPY requirements_bot.txt ./
 
 # Установка Python зависимостей
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements_bot.txt
 
 # Копирование исходного кода бота
 COPY tg_bot_api.py ./
@@ -25,6 +25,9 @@ RUN mkdir -p logs
 
 # Переменные окружения
 ENV PYTHONPATH=/app
+
+# Открываем порт HTTP сервера
+EXPOSE 8080
 
 # Команда запуска
 CMD ["python", "tg_bot_api.py"]
