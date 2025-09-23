@@ -17,7 +17,14 @@ if [[ -z "${FOLDER_ID:-}" ]]; then
   exit 1
 fi
 
-echo "[INFO] Folder: ${FOLDER_ID}  Cloud: ${CLOUD_ID:-unknown}"
+# SECRET_ID обязателен для загрузки секретов из Lockbox
+SECRET_ID=${SECRET_ID:-e6q8vbbldqor67ogn9ne}
+if [[ -z "${SECRET_ID}" ]]; then
+  echo "[ERROR] SECRET_ID не задан. Установите переменную окружения SECRET_ID."
+  exit 1
+fi
+
+echo "[INFO] Folder: ${FOLDER_ID}  Cloud: ${CLOUD_ID:-unknown}  Secret: ${SECRET_ID}"
 
 # --------- Service Account ---------
 SA_NAME=${SA_NAME:-sc-containers}
@@ -47,21 +54,13 @@ echo "[INFO] Registry: ${REGISTRY}"
 # --------- Access bindings (idempotent) ---------
 yc container registry add-access-binding --id "${REGISTRY_ID}" --role container-registry.images.puller --subject "serviceAccount:${SA_ID}" >/dev/null 2>&1 || true
 yc resource-manager folder add-access-binding --id "${FOLDER_ID}" --role ai.languageModels.user --subject "serviceAccount:${SA_ID}" >/dev/null 2>&1 || true
+# Доступ к Lockbox секрету для всех контейнеров через SA
+ yc lockbox secret add-access-binding --id "${SECRET_ID}" --role lockbox.payloadViewer --subject "serviceAccount:${SA_ID}" >/dev/null 2>&1 || true
 
-# Lockbox secret access (измените при необходимости)
-SECRET_ID=${SECRET_ID:-e6q8vbbldqor67ogn9ne}
-yc lockbox secret add-access-binding --id "${SECRET_ID}" --role lockbox.payloadViewer --subject "serviceAccount:${SA_ID}" >/dev/null 2>&1 || true
-
-# --------- Optional envs ---------
+# --------- Non-secret envs ---------
 : "${S3_BUCKET:=vedroo}"
 : "${S3_PREFIX:=}"
 : "${S3_ENDPOINT:=https://storage.yandexcloud.net}"
-: "${TELEGRAM_TOKEN:=${TELEGRAM_TOKEN:-}}"
-if [[ -z "${TELEGRAM_TOKEN}" ]]; then
-  read -r -p "Enter TELEGRAM_TOKEN (или оставьте пустым, чтобы пропустить деплой Telegram): " TELEGRAM_TOKEN || true
-fi
-if [[ -z "${S3_ACCESS_KEY:-}" ]]; then read -r -p "Enter S3_ACCESS_KEY (опционально): " S3_ACCESS_KEY || true; fi
-if [[ -z "${S3_SECRET_KEY:-}" ]]; then read -r -p "Enter S3_SECRET_KEY (опционально): " S3_SECRET_KEY || true; fi
 
 echo "[INFO] Использую S3: bucket=${S3_BUCKET} prefix=${S3_PREFIX} endpoint=${S3_ENDPOINT}"
 
@@ -98,8 +97,8 @@ yc serverless container revision deploy \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s \
   --environment LOCKBOX_SERVICE_HOST=0.0.0.0,LOCKBOX_SERVICE_PORT=8080,SECRET_ID="${SECRET_ID}" >/dev/null
-
-yc serverless container allow-unauthenticated-invoke --name lockbox >/dev/null 2>&1 || true
+# Не открываем публичный доступ к lockbox (минимизация поверхности атаки)
+# yc serverless container allow-unauthenticated-invoke --name lockbox >/dev/null 2>&1 || true
 
 
 echo "[DEPLOY] logging"
@@ -108,7 +107,7 @@ yc serverless container revision deploy \
   --image "${REGISTRY}/logging:latest" \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s \
-  --environment LOGGING_SERVICE_HOST=0.0.0.0,LOGGING_SERVICE_PORT=8080 >/dev/null
+  --environment LOGGING_SERVICE_HOST=0.0.0.0,LOGGING_SERVICE_PORT=8080,SECRET_ID="${SECRET_ID}" >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name logging >/dev/null 2>&1 || true
 
@@ -119,7 +118,7 @@ yc serverless container revision deploy \
   --image "${REGISTRY}/validation:latest" \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s \
-  --environment VALIDATION_SERVICE_HOST=0.0.0.0,VALIDATION_SERVICE_PORT=8080,FOLDER_ID="${FOLDER_ID}" >/dev/null
+  --environment VALIDATION_SERVICE_HOST=0.0.0.0,VALIDATION_SERVICE_PORT=8080,FOLDER_ID="${FOLDER_ID}",SECRET_ID="${SECRET_ID}" >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name validation >/dev/null 2>&1 || true
 
@@ -130,7 +129,7 @@ yc serverless container revision deploy \
   --image "${REGISTRY}/yandex:latest" \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
-  --environment YANDEX_SERVICE_HOST=0.0.0.0,YANDEX_SERVICE_PORT=8080,FOLDER_ID="${FOLDER_ID}" >/dev/null
+  --environment YANDEX_SERVICE_HOST=0.0.0.0,YANDEX_SERVICE_PORT=8080,FOLDER_ID="${FOLDER_ID}",SECRET_ID="${SECRET_ID}" >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name yandex >/dev/null 2>&1 || true
 
@@ -144,10 +143,8 @@ RAG_ENV=(
   "S3_ENDPOINT=${S3_ENDPOINT}"
   "S3_BUCKET=${S3_BUCKET}"
   "S3_PREFIX=${S3_PREFIX}"
+  "SECRET_ID=${SECRET_ID}"
 )
-[[ -n "${S3_ACCESS_KEY:-}" ]] && RAG_ENV+=("S3_ACCESS_KEY=${S3_ACCESS_KEY}")
-[[ -n "${S3_SECRET_KEY:-}" ]] && RAG_ENV+=("S3_SECRET_KEY=${S3_SECRET_KEY}")
-
 # join env with commas
 RAG_ENV_JOINED=$(IFS=, ; echo "${RAG_ENV[*]}")
 
@@ -182,32 +179,34 @@ yc serverless container revision deploy \
   --image "${REGISTRY}/gateway:latest" \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
-  --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}" >/dev/null
+  --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}",SECRET_ID="${SECRET_ID}",EXPOSE_LOCKBOX_PROXY=false >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name gateway >/dev/null 2>&1 || true
 GATEWAY_URL="$(yc serverless container get --name gateway --format json | jq -r '.url')"
 echo "[INFO] GATEWAY_URL = ${GATEWAY_URL}"
 
-# --------- Deploy telegram (optional) ---------
-if [[ -n "${TELEGRAM_TOKEN}" ]]; then
-  echo "[DEPLOY] telegram"
-  yc serverless container revision deploy \
-    --container-name telegram \
-    --image "${REGISTRY}/telegram:latest" \
-    --service-account-id "${SA_ID}" \
-    --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s \
-    --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,TELEGRAM_TOKEN="${TELEGRAM_TOKEN}",GATEWAY_URL="${GATEWAY_URL}" >/dev/null
-  yc serverless container allow-unauthenticated-invoke --name telegram >/dev/null 2>&1 || true
-  TELEGRAM_URL="$(yc serverless container get --name telegram --format json | jq -r '.url')"
-  echo "[INFO] TELEGRAM_URL = ${TELEGRAM_URL}"
-  echo "[DEPLOY] gateway (update with TELEGRAM url)"
-  yc serverless container revision deploy \
-    --container-name gateway \
-    --image "${REGISTRY}/gateway:latest" \
-    --service-account-id "${SA_ID}" \
-    --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
-    --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}",TELEGRAM_SERVICE_URL="${TELEGRAM_URL}" >/dev/null
-fi
+# --------- Deploy telegram ---------
+# TELEGRAM_TOKEN не передаём напрямую — сервис прочитает его из Lockbox по SECRET_ID
+
+echo "[DEPLOY] telegram"
+yc serverless container revision deploy \
+  --container-name telegram \
+  --image "${REGISTRY}/telegram:latest" \
+  --service-account-id "${SA_ID}" \
+  --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s \
+  --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL="${GATEWAY_URL}",SECRET_ID="${SECRET_ID}" >/dev/null
+
+yc serverless container allow-unauthenticated-invoke --name telegram >/dev/null 2>&1 || true
+TELEGRAM_URL="$(yc serverless container get --name telegram --format json | jq -r '.url')"
+echo "[INFO] TELEGRAM_URL = ${TELEGRAM_URL}"
+
+echo "[DEPLOY] gateway (update with TELEGRAM url)"
+yc serverless container revision deploy \
+  --container-name gateway \
+  --image "${REGISTRY}/gateway:latest" \
+  --service-account-id "${SA_ID}" \
+  --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
+  --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}",TELEGRAM_SERVICE_URL="${TELEGRAM_URL}",SECRET_ID="${SECRET_ID}",EXPOSE_LOCKBOX_PROXY=false >/dev/null
 
 # --------- Summary ---------
 echo
@@ -218,9 +217,7 @@ echo "LOGGING_URL    = ${LOGGING_URL}"
 echo "VALIDATION_URL = ${VALIDATION_URL}"
 echo "YANDEX_URL     = ${YANDEX_URL}"
 echo "RAG_URL        = ${RAG_URL}"
-[[ -n "${TELEGRAM_URL:-}" ]] && echo "TELEGRAM_URL   = ${TELEGRAM_URL}"
+echo "TELEGRAM_URL   = ${TELEGRAM_URL}"
 echo "========================================================="
 echo "Use:  curl \"${GATEWAY_URL}/health\""
-echo "      curl \"${GATEWAY_URL}/lockbox/secret/${SECRET_ID}/kv\""
-echo
-
+# echo "      curl \"${GATEWAY_URL}/lockbox/secret/${SECRET_ID}/kv\""  # отключено по умолчанию

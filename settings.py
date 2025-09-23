@@ -1,6 +1,15 @@
 import os
 import dotenv
 
+# Сначала пробуем подтянуть секrets из Yandex Lockbox (если задан SECRET_ID в окружении)
+try:
+    from lockbox_loader import load_lockbox_env
+    load_lockbox_env()  # не перезаписывает уже заданные переменные окружения
+except Exception:
+    # Тихо игнорируем, чтобы локальная разработка не ломалась
+    pass
+
+# Затем стандартно подгружаем .env (в локальной разработке)
 dotenv.load_dotenv()
 
 SERVICE_ACCOUNT_ID = os.getenv("SERVICE_ACCOUNT_ID")

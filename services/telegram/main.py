@@ -21,7 +21,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# Загружаем токен через settings, где выполняется подгрузка секретов из Lockbox
+try:
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from settings import TELEGRAM_TOKEN
+except Exception:
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8000")
 
 if not TELEGRAM_TOKEN:

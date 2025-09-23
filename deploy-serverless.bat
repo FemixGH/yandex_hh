@@ -23,7 +23,14 @@ if "%FOLDER_ID%"=="" (
   exit /b 1
 )
 
-echo [INFO] Folder: %FOLDER_ID%  Cloud: %CLOUD_ID%
+rem SECRET_ID must be provided (matches Lockbox secret with keys like .env)
+if "%SECRET_ID%"=="" set SECRET_ID=e6q8vbbldqor67ogn9ne
+if "%SECRET_ID%"=="" (
+  echo [ERROR] SECRET_ID is not set.
+  exit /b 1
+)
+
+echo [INFO] Folder: %FOLDER_ID%  Cloud: %CLOUD_ID%  Secret: %SECRET_ID%
 
 rem -------- Resolve or create Service Account --------
 set SA_NAME=sc-containers
@@ -60,17 +67,12 @@ rem Grant LLM API usage on folder (idempotent)
 yc resource-manager folder add-access-binding --id %FOLDER_ID% --role ai.languageModels.user --subject serviceAccount:%SA_ID% >nul 2>nul
 
 rem Grant Lockbox payloadViewer on the secret (idempotent)
-set SECRET_ID=e6q8vbbldqor67ogn9ne
 yc lockbox secret add-access-binding --id %SECRET_ID% --role lockbox.payloadViewer --subject serviceAccount:%SA_ID% >nul 2>nul
 
-rem -------- Ask for optional envs --------
-if "%TELEGRAM_TOKEN%"=="" (
-  set /p TELEGRAM_TOKEN=Enter TELEGRAM_TOKEN (or leave empty to skip Telegram deploy):
-)
+rem -------- Optional non-secret envs --------
 if "%S3_BUCKET%"=="" set S3_BUCKET=vedroo
 if "%S3_PREFIX%"=="" set S3_PREFIX=
-if "%S3_ACCESS_KEY%"=="" set /p S3_ACCESS_KEY=Enter S3_ACCESS_KEY (optional, press Enter to skip):
-if "%S3_SECRET_KEY%"=="" set /p S3_SECRET_KEY=Enter S3_SECRET_KEY (optional, press Enter to skip):
+set S3_ENDPOINT=https://storage.yandexcloud.net
 
 echo [INFO] Using S3: bucket=%S3_BUCKET% prefix=%S3_PREFIX%
 
@@ -82,7 +84,7 @@ docker build -t %REGISTRY%/validation:latest -f services/validation/Dockerfile .
 docker build -t %REGISTRY%/yandex:latest    -f services/yandex/Dockerfile . || goto :docker_fail
 docker build -t %REGISTRY%/rag:latest       -f services/rag/Dockerfile . || goto :docker_fail
 docker build -t %REGISTRY%/gateway:latest   -f services/gateway/Dockerfile . || goto :docker_fail
-
+docker build -t %REGISTRY%/telegram:latest  -f services/telegram/Dockerfile . || goto :docker_fail
 
 echo [INFO] Pushing images...
 docker push %REGISTRY%/lockbox:latest   || goto :docker_fail
@@ -91,6 +93,7 @@ docker push %REGISTRY%/validation:latest || goto :docker_fail
 docker push %REGISTRY%/yandex:latest    || goto :docker_fail
 docker push %REGISTRY%/rag:latest       || goto :docker_fail
 docker push %REGISTRY%/gateway:latest   || goto :docker_fail
+docker push %REGISTRY%/telegram:latest  || goto :docker_fail
 
 goto :deploy
 
@@ -104,34 +107,31 @@ for %%S in (lockbox logging validation yandex rag gateway telegram) do (
   yc serverless container get --name %%S >nul 2>nul || yc serverless container create --name %%S >nul
 )
 
-rem -------- Deploy backends (except telegram & gateway) --------
+rem -------- Deploy backends --------
 
 echo [INFO] Deploying lockbox...
-yc serverless container revision deploy --container-name lockbox --image %REGISTRY%/lockbox:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment SECRET_ID=%SECRET_ID% || goto :deploy_fail
-
-rem open public access (idempotent)
-yc serverless container allow-unauthenticated-invoke --name lockbox >nul 2>nul
+yc serverless container revision deploy --container-name lockbox --image %REGISTRY%/lockbox:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment LOCKBOX_SERVICE_HOST=0.0.0.0,LOCKBOX_SERVICE_PORT=8080,SECRET_ID=%SECRET_ID% || goto :deploy_fail
+rem do NOT open public access to lockbox
+rem yc serverless container allow-unauthenticated-invoke --name lockbox >nul 2>nul
 
 
 echo [INFO] Deploying logging...
-yc serverless container revision deploy --container-name logging --image %REGISTRY%/logging:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment LOGGING_SERVICE_HOST=0.0.0.0,LOGGING_SERVICE_PORT=8080 || goto :deploy_fail
+yc serverless container revision deploy --container-name logging --image %REGISTRY%/logging:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment LOGGING_SERVICE_HOST=0.0.0.0,LOGGING_SERVICE_PORT=8080,SECRET_ID=%SECRET_ID% || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name logging >nul 2>nul
 
 
 echo [INFO] Deploying validation...
-yc serverless container revision deploy --container-name validation --image %REGISTRY%/validation:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment VALIDATION_SERVICE_HOST=0.0.0.0,VALIDATION_SERVICE_PORT=8080,FOLDER_ID=%FOLDER_ID% || goto :deploy_fail
+yc serverless container revision deploy --container-name validation --image %REGISTRY%/validation:latest --service-account-id %SA_ID% --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s --environment VALIDATION_SERVICE_HOST=0.0.0.0,VALIDATION_SERVICE_PORT=8080,FOLDER_ID=%FOLDER_ID%,SECRET_ID=%SECRET_ID% || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name validation >nul 2>nul
 
 
 echo [INFO] Deploying yandex...
-yc serverless container revision deploy --container-name yandex --image %REGISTRY%/yandex:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment YANDEX_SERVICE_HOST=0.0.0.0,YANDEX_SERVICE_PORT=8080,FOLDER_ID=%FOLDER_ID% || goto :deploy_fail
+yc serverless container revision deploy --container-name yandex --image %REGISTRY%/yandex:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment YANDEX_SERVICE_HOST=0.0.0.0,YANDEX_SERVICE_PORT=8080,FOLDER_ID=%FOLDER_ID%,SECRET_ID=%SECRET_ID% || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name yandex >nul 2>nul
 
 
 echo [INFO] Deploying rag...
-set RAG_ENV=RAG_SERVICE_HOST=0.0.0.0,RAG_SERVICE_PORT=8080,VECTORSTORE_DIR=/tmp/vectorstore,FOLDER_ID=%FOLDER_ID%,S3_ENDPOINT=https://storage.yandexcloud.net,S3_BUCKET=%S3_BUCKET%,S3_PREFIX=%S3_PREFIX%
-if NOT "%S3_ACCESS_KEY%"=="" set RAG_ENV=!RAG_ENV!,S3_ACCESS_KEY=%S3_ACCESS_KEY%
-if NOT "%S3_SECRET_KEY%"=="" set RAG_ENV=!RAG_ENV!,S3_SECRET_KEY=%S3_SECRET_KEY%
+set RAG_ENV=RAG_SERVICE_HOST=0.0.0.0,RAG_SERVICE_PORT=8080,VECTORSTORE_DIR=/tmp/vectorstore,FOLDER_ID=%FOLDER_ID%,S3_ENDPOINT=https://storage.yandexcloud.net,S3_BUCKET=%S3_BUCKET%,S3_PREFIX=%S3_PREFIX%,SECRET_ID=%SECRET_ID%
 
 yc serverless container revision deploy --container-name rag --image %REGISTRY%/rag:latest --service-account-id %SA_ID% --cores 2 --memory 1024MB --concurrency 8 --execution-timeout 60s --environment !RAG_ENV! || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name rag >nul 2>nul
@@ -150,25 +150,25 @@ echo   VALIDATION_URL= %VALIDATION_URL%
 echo   YANDEX_URL    = %YANDEX_URL%
 echo   RAG_URL       = %RAG_URL%
 
-rem -------- Deploy gateway (without telegram yet) --------
+rem -------- Deploy gateway --------
 
 echo [INFO] Deploying gateway (initial)...
-yc serverless container revision deploy --container-name gateway --image %REGISTRY%/gateway:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL=%LOCKBOX_URL%,LOGGING_SERVICE_URL=%LOGGING_URL%,VALIDATION_SERVICE_URL=%VALIDATION_URL%,YANDEX_SERVICE_URL=%YANDEX_URL%,RAG_SERVICE_URL=%RAG_URL% || goto :deploy_fail
+yc serverless container revision deploy --container-name gateway --image %REGISTRY%/gateway:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL=%LOCKBOX_URL%,LOGGING_SERVICE_URL=%LOGGING_URL%,VALIDATION_SERVICE_URL=%VALIDATION_URL%,YANDEX_SERVICE_URL=%YANDEX_URL%,RAG_SERVICE_URL=%RAG_URL%,SECRET_ID=%SECRET_ID%,EXPOSE_LOCKBOX_PROXY=false || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name gateway >nul 2>nul
 for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "(yc serverless container get --name gateway --format json ^| ConvertFrom-Json).url"`) do set GATEWAY_URL=%%i
 
 echo [INFO] GATEWAY_URL = %GATEWAY_URL%
 
-rem -------- Deploy telegram (optional) --------
-if NOT "%TELEGRAM_TOKEN%"=="" (
-  echo [INFO] Deploying telegram...
-  yc serverless container revision deploy --container-name telegram --image %REGISTRY%/telegram:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,TELEGRAM_TOKEN=%TELEGRAM_TOKEN%,GATEWAY_URL=%GATEWAY_URL% || goto :deploy_fail
-  yc serverless container allow-unauthenticated-invoke --name telegram >nul 2>nul
-  for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "(yc serverless container get --name telegram --format json ^| ConvertFrom-Json).url"`) do set TELEGRAM_URL=%%i
-  echo [INFO] TELEGRAM_URL = %TELEGRAM_URL%
-  echo [INFO] Updating gateway with TELEGRAM URL...
-  yc serverless container revision deploy --container-name gateway --image %REGISTRY%/gateway:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL=%LOCKBOX_URL%,LOGGING_SERVICE_URL=%LOGGING_URL%,VALIDATION_SERVICE_URL=%VALIDATION_URL%,YANDEX_SERVICE_URL=%YANDEX_URL%,RAG_SERVICE_URL=%RAG_URL%,TELEGRAM_SERVICE_URL=%TELEGRAM_URL% || goto :deploy_fail
-)
+rem -------- Deploy telegram --------
+
+echo [INFO] Deploying telegram...
+yc serverless container revision deploy --container-name telegram --image %REGISTRY%/telegram:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL=%GATEWAY_URL%,SECRET_ID=%SECRET_ID% || goto :deploy_fail
+yc serverless container allow-unauthenticated-invoke --name telegram >nul 2>nul
+for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "(yc serverless container get --name telegram --format json ^| ConvertFrom-Json).url"`) do set TELEGRAM_URL=%%i
+echo [INFO] TELEGRAM_URL = %TELEGRAM_URL%
+
+echo [INFO] Updating gateway with TELEGRAM URL...
+yc serverless container revision deploy --container-name gateway --image %REGISTRY%/gateway:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL=%LOCKBOX_URL%,LOGGING_SERVICE_URL=%LOGGING_URL%,VALIDATION_SERVICE_URL=%VALIDATION_URL%,YANDEX_SERVICE_URL=%YANDEX_URL%,RAG_SERVICE_URL=%RAG_URL%,TELEGRAM_SERVICE_URL=%TELEGRAM_URL%,SECRET_ID=%SECRET_ID%,EXPOSE_LOCKBOX_PROXY=false || goto :deploy_fail
 
 echo.
 echo ================= Deployment completed =================
@@ -178,14 +178,12 @@ echo LOGGING_URL   = %LOGGING_URL%
 echo VALIDATION_URL= %VALIDATION_URL%
 echo YANDEX_URL    = %YANDEX_URL%
 echo RAG_URL       = %RAG_URL%
-if NOT "%TELEGRAM_URL%"=="" echo TELEGRAM_URL  = %TELEGRAM_URL%
+echo TELEGRAM_URL  = %TELEGRAM_URL%
 echo ========================================================
 echo Use:  curl "%GATEWAY_URL%/health"
-echo       curl "%GATEWAY_URL%/lockbox/secret/%SECRET_ID%/kv"
 echo.
 exit /b 0
 
 :deploy_fail
 echo [ERROR] Deploy failed. Check the preceding output.
 exit /b 1
-

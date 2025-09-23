@@ -9,11 +9,11 @@ import asyncio
 import logging
 import os
 import traceback
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from datetime import datetime
 
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -65,13 +65,15 @@ SERVICES_CONFIG = {
     "logging": {
         "url": os.getenv("LOGGING_SERVICE_URL", "http://logging-service:8005"),
         "timeout": 5.0
-    },
-    # Добавлен сервис Lockbox
-    "lockbox": {
+    }
+}
+
+# При необходимости включаем lockbox сервис в маршрутизацию и health-check
+if os.getenv("EXPOSE_LOCKBOX_PROXY", "false").lower() == "true":
+    SERVICES_CONFIG["lockbox"] = {
         "url": os.getenv("LOCKBOX_SERVICE_URL", "http://lockbox-service:8006"),
         "timeout": 15.0
     }
-}
 
 # ========================
 # Pydantic модели
@@ -198,8 +200,7 @@ async def health_check():
     services_health = await asyncio.gather(*health_tasks, return_exceptions=True)
 
     # Обрабатываем результаты
-    service_statuses = []
-    overall_status = "healthy"
+    service_statuses: List[ServiceHealthStatus] = []
 
     for i, result in enumerate(services_health):
         service_name = list(SERVICES_CONFIG.keys())[i]
@@ -210,11 +211,15 @@ async def health_check():
                 status="unknown",
                 error=str(result)
             ))
-            overall_status = "degraded"
         else:
-            service_statuses.append(result)
-            if result.status != "healthy":
-                overall_status = "degraded"
+            # Явно приводим к нужному типу (устранение предупреждений типизации)
+            service_statuses.append(ServiceHealthStatus(**result.dict()))
+
+    overall_status = "healthy"
+    for s in service_statuses:
+        if s.status != "healthy":
+            overall_status = "degraded"
+            break
 
     return SystemHealthResponse(
         status=overall_status,
@@ -252,7 +257,9 @@ async def ask_bartender(request: BartenderQuery):
                     answer="Извините, ваш запрос не прошел модерацию. Пожалуйста, перефразируйте вопрос.",
                     blocked=True,
                     reason=moderation_result.get("reason", "Нарушение правил"),
-                    processing_time=processing_time
+                    retrieved_count=0,
+                    processing_time=processing_time,
+                    sources=[]
                 )
 
         # Получаем ответ от RAG сервиса
@@ -281,7 +288,8 @@ async def ask_bartender(request: BartenderQuery):
                     blocked=True,
                     reason=moderation_result.get("reason", "Нарушение правил"),
                     retrieved_count=rag_response.get("retrieved_count", 0),
-                    processing_time=processing_time
+                    processing_time=processing_time,
+                    sources=rag_response.get("sources", [])
                 )
 
         processing_time = (datetime.now() - start_time).total_seconds()
@@ -289,6 +297,7 @@ async def ask_bartender(request: BartenderQuery):
         response = BartenderResponse(
             answer=answer,
             blocked=False,
+            reason=None,
             retrieved_count=rag_response.get("retrieved_count", 0),
             processing_time=processing_time,
             sources=rag_response.get("sources", [])
@@ -392,22 +401,23 @@ async def yandex_proxy(path: str, request):
 
     return await service_client.call_service("yandex", f"/{path}", method, data, params)
 
-# Проксирование запросов к Lockbox сервису
-@app.api_route("/lockbox/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def lockbox_proxy(path: str, request):
-    """Проксирование запросов к Lockbox сервису"""
-    method = request.method
-    params = dict(request.query_params)
+# Проксирование запросов к Lockbox сервису (по умолчанию отключено для безопасности)
+if os.getenv("EXPOSE_LOCKBOX_PROXY", "false").lower() == "true":
+    @app.api_route("/lockbox/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+    async def lockbox_proxy(path: str, request):
+        """Проксирование запросов к Lockbox сервису (только при явном включении)"""
+        method = request.method
+        params = dict(request.query_params)
 
-    if method in ["POST", "PUT"]:
-        try:
-            data = await request.json()
-        except:
+        if method in ["POST", "PUT"]:
+            try:
+                data = await request.json()
+            except:
+                data = None
+        else:
             data = None
-    else:
-        data = None
 
-    return await service_client.call_service("lockbox", f"/{path}", method, data, params)
+        return await service_client.call_service("lockbox", f"/{path}", method, data, params)
 
 # ========================
 # Обработчики ошибок
