@@ -117,7 +117,8 @@ class ServiceClient:
         self.client = httpx.AsyncClient()
 
     async def call_service(self, service_name: str, endpoint: str, method: str = "GET",
-                          data: Optional[Dict] = None, params: Optional[Dict] = None) -> Dict:
+                          data: Optional[Dict] = None, params: Optional[Dict] = None,
+                          headers: Optional[Dict[str, str]] = None) -> Dict:
         """Вызов микросервиса"""
         if service_name not in SERVICES_CONFIG:
             raise HTTPException(status_code=500, detail=f"Неизвестный сервис: {service_name}")
@@ -127,13 +128,13 @@ class ServiceClient:
 
         try:
             if method.upper() == "GET":
-                response = await self.client.get(url, params=params, timeout=config["timeout"])
+                response = await self.client.get(url, params=params, headers=headers, timeout=config["timeout"])
             elif method.upper() == "POST":
-                response = await self.client.post(url, json=data, params=params, timeout=config["timeout"])
+                response = await self.client.post(url, json=data, params=params, headers=headers, timeout=config["timeout"])
             elif method.upper() == "PUT":
-                response = await self.client.put(url, json=data, params=params, timeout=config["timeout"])
+                response = await self.client.put(url, json=data, params=params, headers=headers, timeout=config["timeout"])
             elif method.upper() == "DELETE":
-                response = await self.client.delete(url, params=params, timeout=config["timeout"])
+                response = await self.client.delete(url, params=params, headers=headers, timeout=config["timeout"])
             else:
                 raise HTTPException(status_code=400, detail=f"Неподдерживаемый HTTP метод: {method}")
 
@@ -351,7 +352,13 @@ async def telegram_proxy(path: str, request):
     else:
         data = None
 
-    return await service_client.call_service("telegram", f"/{path}", method, data, params)
+    # Пробрасываем секрет вебхука, если есть
+    fwd_headers = {}
+    secret = request.headers.get("x-telegram-bot-api-secret-token") or request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if secret:
+        fwd_headers["X-Telegram-Bot-Api-Secret-Token"] = secret
+
+    return await service_client.call_service("telegram", f"/{path}", method, data, params, headers=fwd_headers or None)
 
 @app.api_route("/rag/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def rag_proxy(path: str, request):

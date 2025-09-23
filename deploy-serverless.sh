@@ -17,12 +17,15 @@ if [[ -z "${FOLDER_ID:-}" ]]; then
   exit 1
 fi
 
-# SECRET_ID обязателен для загрузки секретов из Lockbox
+# SECRET_ID обязателен для загрузки секретов из Lockbox (в т.ч. TELEGRAM_TOKEN)
 SECRET_ID=${SECRET_ID:-e6q8vbbldqor67ogn9ne}
 if [[ -z "${SECRET_ID}" ]]; then
   echo "[ERROR] SECRET_ID не задан. Установите переменную окружения SECRET_ID."
   exit 1
 fi
+
+# Опционально: секрет токена вебхука Telegram
+WEBHOOK_SECRET_TOKEN=${WEBHOOK_SECRET_TOKEN:-}
 
 echo "[INFO] Folder: ${FOLDER_ID}  Cloud: ${CLOUD_ID:-unknown}  Secret: ${SECRET_ID}"
 
@@ -97,7 +100,7 @@ yc serverless container revision deploy \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 256MB --concurrency 16 --execution-timeout 10s \
   --environment LOCKBOX_SERVICE_HOST=0.0.0.0,LOCKBOX_SERVICE_PORT=8080,SECRET_ID="${SECRET_ID}" >/dev/null
-# Не открываем публичный доступ к lockbox (минимизация поверхности атаки)
+# не открываем публичный доступ к lockbox (минимизация поверхности атаки)
 # yc serverless container allow-unauthenticated-invoke --name lockbox >/dev/null 2>&1 || true
 
 
@@ -188,13 +191,28 @@ echo "[INFO] GATEWAY_URL = ${GATEWAY_URL}"
 # --------- Deploy telegram ---------
 # TELEGRAM_TOKEN не передаём напрямую — сервис прочитает его из Lockbox по SECRET_ID
 
+# Сборка окружения для telegram
+TELEGRAM_ENV=(
+  "TELEGRAM_SERVICE_HOST=0.0.0.0"
+  "TELEGRAM_SERVICE_PORT=8080"
+  "GATEWAY_URL=${GATEWAY_URL}"
+  "SECRET_ID=${SECRET_ID}"
+  "USE_WEBHOOK=true"
+  "WEBHOOK_URL=${GATEWAY_URL}/telegram/webhook"
+)
+# Добавим секрет токена вебхука, если он задан
+if [[ -n "${WEBHOOK_SECRET_TOKEN}" ]]; then
+  TELEGRAM_ENV+=("WEBHOOK_SECRET_TOKEN=${WEBHOOK_SECRET_TOKEN}")
+fi
+TELEGRAM_ENV_JOINED=$(IFS=, ; echo "${TELEGRAM_ENV[*]}")
+
 echo "[DEPLOY] telegram"
 yc serverless container revision deploy \
   --container-name telegram \
   --image "${REGISTRY}/telegram:latest" \
   --service-account-id "${SA_ID}" \
   --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s \
-  --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL="${GATEWAY_URL}",SECRET_ID="${SECRET_ID}" >/dev/null
+  --environment "${TELEGRAM_ENV_JOINED}" >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name telegram >/dev/null 2>&1 || true
 TELEGRAM_URL="$(yc serverless container get --name telegram --format json | jq -r '.url')"

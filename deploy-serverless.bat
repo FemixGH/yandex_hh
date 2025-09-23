@@ -32,6 +32,9 @@ if "%SECRET_ID%"=="" (
 
 echo [INFO] Folder: %FOLDER_ID%  Cloud: %CLOUD_ID%  Secret: %SECRET_ID%
 
+rem Optional: webhook secret token for Telegram (if set, will be passed to container)
+set WEBHOOK_SECRET_TOKEN=%WEBHOOK_SECRET_TOKEN%
+
 rem -------- Resolve or create Service Account --------
 set SA_NAME=sc-containers
 for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "try{ (yc iam service-account get --name %SA_NAME% --format json ^| ConvertFrom-Json).id }catch{''}"`) do set SA_ID=%%i
@@ -162,7 +165,10 @@ echo [INFO] GATEWAY_URL = %GATEWAY_URL%
 rem -------- Deploy telegram --------
 
 echo [INFO] Deploying telegram...
-yc serverless container revision deploy --container-name telegram --image %REGISTRY%/telegram:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s --environment TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL=%GATEWAY_URL%,SECRET_ID=%SECRET_ID% || goto :deploy_fail
+set TELEGRAM_ENV=TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL=%GATEWAY_URL%,SECRET_ID=%SECRET_ID%,USE_WEBHOOK=true,WEBHOOK_URL=%GATEWAY_URL%/telegram/webhook
+if not "%WEBHOOK_SECRET_TOKEN%"=="" set TELEGRAM_ENV=%TELEGRAM_ENV%,WEBHOOK_SECRET_TOKEN=%WEBHOOK_SECRET_TOKEN%
+
+yc serverless container revision deploy --container-name telegram --image %REGISTRY%/telegram:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s --environment %TELEGRAM_ENV% || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name telegram >nul 2>nul
 for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "(yc serverless container get --name telegram --format json ^| ConvertFrom-Json).url"`) do set TELEGRAM_URL=%%i
 echo [INFO] TELEGRAM_URL = %TELEGRAM_URL%

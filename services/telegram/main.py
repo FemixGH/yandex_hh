@@ -11,8 +11,9 @@ from typing import Optional
 
 import httpx
 from telegram import Update, ReplyKeyboardMarkup
+from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -30,6 +31,11 @@ except Exception:
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8000")
+
+# Режим работы: polling (локально) или webhook (в облаке). По умолчанию — polling
+USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() in {"1", "true", "yes"}
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Публичный URL API Gateway, например: https://<id>.apigw.yandexcloud.net/telegram/webhook
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")  # Совпадает с тем, что задан в setWebhook
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не установлен")
@@ -208,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     # Отправляем индикатор печати
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     try:
         # Получаем ответ от Gateway
@@ -285,10 +291,25 @@ async def setup_bot():
     telegram_app.add_handler(CommandHandler("help", help_command))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Запускаем бота
+    # Инициализация
     await telegram_app.initialize()
     await telegram_app.start()
-    await telegram_app.updater.start_polling()
+
+    if USE_WEBHOOK and WEBHOOK_URL:
+        # В облаке используем webhook
+        await telegram_app.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET_TOKEN)
+        logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+    else:
+        # Локально используем polling
+        try:
+            await telegram_app.bot.delete_webhook(drop_pending_updates=True)
+        except Exception:
+            pass
+        if getattr(telegram_app, 'updater', None) is not None:
+            await telegram_app.updater.start_polling()
+            logger.info("Polling запущен")
+        else:
+            logger.warning("Updater недоступен. Проверьте версию python-telegram-bot.")
 
     logger.info("Telegram бот запущен")
 
@@ -296,7 +317,17 @@ async def shutdown_bot():
     """Остановка Telegram бота"""
     global telegram_app
     if telegram_app:
-        await telegram_app.updater.stop()
+        if USE_WEBHOOK and WEBHOOK_URL:
+            try:
+                await telegram_app.bot.delete_webhook()
+            except Exception:
+                pass
+        else:
+            if getattr(telegram_app, 'updater', None) is not None:
+                try:
+                    await telegram_app.updater.stop()
+                except Exception:
+                    pass
         await telegram_app.stop()
         await telegram_app.shutdown()
         logger.info("Telegram бот остановлен")
@@ -320,7 +351,8 @@ async def health_check():
     global telegram_app
     return {
         "status": "healthy" if telegram_app else "starting",
-        "bot_running": telegram_app is not None
+        "bot_running": telegram_app is not None,
+        "mode": "webhook" if USE_WEBHOOK and WEBHOOK_URL else "polling"
     }
 
 @app.post("/send_message")
@@ -342,6 +374,38 @@ async def send_message(chat_id: int, text: str, parse_mode: str = None):
         logger.error(f"Ошибка отправки сообщения: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Вебхук для Telegram (для работы через API Gateway/Serverless Containers)
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Optional[str] = Header(default=None)):
+    """Эндпоинт для приёма вебхуков от Telegram. Возвращаем ACK быстро, обработку запускаем в фоне."""
+    global telegram_app
+
+    if not (USE_WEBHOOK and WEBHOOK_URL):
+        raise HTTPException(status_code=400, detail="Webhook режим не активирован")
+
+    if WEBHOOK_SECRET_TOKEN:
+        if not x_telegram_bot_api_secret_token or x_telegram_bot_api_secret_token != WEBHOOK_SECRET_TOKEN:
+            raise HTTPException(status_code=403, detail="Неверный секретный токен вебхука")
+
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Бот не запущен")
+
+    try:
+        data = await request.json()
+        update = Update.de_json(data, bot=telegram_app.bot)
+        # Обрабатываем в фоне, чтобы быстро вернуть 200 OK
+        asyncio.create_task(telegram_app.process_update(update))
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True}
+
+# Алиас короткого пути, чтобы проксирование через gateway по /telegram/webhook попадало сюда как /webhook
+@app.post("/webhook")
+async def telegram_webhook_alias(request: Request, x_telegram_bot_api_secret_token: Optional[str] = Header(default=None)):
+    return await telegram_webhook(request, x_telegram_bot_api_secret_token)
+
 # ========================
 # События жизненного цикла
 # ========================
@@ -357,16 +421,21 @@ async def shutdown_event():
     """События при остановке"""
     logger.info("Остановка Telegram Bot Service")
     await shutdown_bot()
+    try:
+        await gateway_client.client.aclose()
+    except Exception:
+        pass
 
 # ========================
 # Запуск приложения
 # ========================
 
 if __name__ == "__main__":
+    # Для Yandex Serverless Containers часто используется переменная PORT (обычно 8080)
     host = os.getenv("TELEGRAM_SERVICE_HOST", "0.0.0.0")
-    port = int(os.getenv("TELEGRAM_SERVICE_PORT", "8001"))
+    port = int(os.getenv("PORT", os.getenv("TELEGRAM_SERVICE_PORT", "8001")))
 
-    logger.info(f"Запуск Telegram Bot Service на {host}:{port}")
+    logger.info(f"Запуск Telegram Bot Service на {host}:{port} (mode={'webhook' if USE_WEBHOOK and WEBHOOK_URL else 'polling'})")
 
     uvicorn.run(
         "main:app",
