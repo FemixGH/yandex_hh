@@ -16,11 +16,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 
 VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "./vectorstore")
+AUDITLOGFILE = os.getenv("AUDITLOGFILE", "./auditlog")
 
 S3_ENDPOINT = "https://storage.yandexcloud.net"
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
-S3_BUCKET = "vedroo"
+S3_BUCKET = "vedrooo2"
 S3_PREFIX = ""
 
 MOD_URL = os.getenv("MOD_PORT")

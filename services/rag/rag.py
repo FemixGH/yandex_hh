@@ -9,7 +9,6 @@ import os
 from services.faiss.faiss import semantic_search
 from services.rag.embending import yandex_completion
 from services.moderation.moderation import post_moderate_output, extract_text_from_yandex_completion
-from settings import VECTORSTORE_DIR
 from fastapi import FastAPI
 from pydantic import BaseModel
 
@@ -26,7 +25,9 @@ class BuildIndexReq(BaseModel):
 
 
 
-AUDIT_FILE = os.path.join(VECTORSTORE_DIR, "moderation_audit.log")
+AUDITLOG_DIR = "./logs"
+os.makedirs(AUDITLOG_DIR, exist_ok=True)
+AUDIT_FILE = os.path.join(AUDITLOG_DIR, "moderation_audit.log")
 def audit_log(entry: dict):
     entry_out = {"ts": time.time(), **entry}
     with open(AUDIT_FILE, "a", encoding="utf-8") as f:

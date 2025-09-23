@@ -12,7 +12,6 @@ import logging
 import os
 import asyncio
 import re
-import sys
 import requests
 from urllib.parse import urlparse
 
@@ -272,20 +271,22 @@ def main():
         if not force_rebuild:
             logger.info("🔄 Проверяю наличие новых файлов для инкрементального обновления...")
             try:
-                incremental_success = update_rag_incremental("vedroo")
+                incremental_success = update_rag_incremental("vedrooo2")
                 if incremental_success:
                     logger.info("✅ Инкрементальное обновление выполнено успешно")
                 else:
                     logger.warning("⚠️ Инкрементальное обновление не удалось, выполняю полную перестройку")
                     # full rebuild
-                    build_docs_from_s3("vedroo", "")
+                    docs = build_docs_from_s3("vedrooo2", "")
+                    if docs:
+                        build_index(docs)
             except Exception as e:
                 logger.exception("Ошибка инкрементального обновления, делаю полную перестройку: %s", e)
-                build_docs_from_s3("vedroo", "")
+                build_docs_from_s3("vedrooo2", "")
 
         else:
             logger.info("🔄 Принудительная перестройка индекса...")
-            build_docs_from_s3("vedroo", "")
+            build_docs_from_s3("vedrooo2", "")
 
         # Попытка загрузить индекс (если он есть)
         try:
