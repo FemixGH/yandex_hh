@@ -73,10 +73,21 @@ fi
 if $FOLLOW_LOGS; then
   echo
   echo "[LOGS] Following logs (since 10m). Press Ctrl+C to stop."
+  PIDS=""
   for SVC in "${SERVICES[@]}"; do
     {
-      yc serverless container logs read --name "$SVC" --follow --since 10m \
-      | sed -u "s/^/[$SVC] /"
+      CID=$(yc serverless container get --name "$SVC" --format json | jq -r '.id // empty')
+      if [[ -z "$CID" ]]; then
+        echo "[$SVC] no container id" >&2
+        exit 0
+      fi
+      # Stream logs via Cloud Logging. Resource type for SC: serverless.containers.container
+      yc logging read \
+        --resource-type serverless.containers.container \
+        --resource-ids "$CID" \
+        --since 10m \
+        --follow 2>/dev/null \
+        | sed -u "s/^/[$SVC] /"
     } &
     PIDS+="$! "
   done
