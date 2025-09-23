@@ -1,100 +1,143 @@
-# Makefile для управления AI Bartender контейнерами
+# Makefile для управления микросервисной архитектурой ИИ Бармена
 
-.PHONY: help build up down logs restart clean dev prod
+.PHONY: help build up down restart logs clean status test
 
-# Переменные
-COMPOSE_FILE=docker-compose.yml
-PROD_COMPOSE_FILE=docker-compose.prod.yml
-PROJECT_NAME=ai-bartender
+# Цвета для вывода
+RED=\033[0;31m
+GREEN=\033[0;32m
+YELLOW=\033[1;33m
+NC=\033[0m # No Color
 
 help: ## Показать справку
-	@echo "Доступные команды:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+	@echo "$(GREEN)Микросервисная архитектура ИИ Бармена$(NC)"
+	@echo "=================================="
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "$(YELLOW)%-20s$(NC) %s\n", $$1, $$2}'
 
-build: ## Собрать все образы
-	docker-compose -f $(COMPOSE_FILE) build
+setup: ## Первоначальная настройка
+	@echo "$(GREEN)Настройка проекта...$(NC)"
+	@if [ ! -f .env ]; then \
+		cp .env.microservices .env; \
+		echo "$(YELLOW)Создан файл .env. Пожалуйста, заполните переменные окружения.$(NC)"; \
+	fi
+	@chmod +x start-microservices.sh stop-microservices.sh monitor-microservices.sh
 
-build-prod: ## Собрать продакшн образы
-	docker-compose -f $(PROD_COMPOSE_FILE) build --no-cache
+build: ## Собрать все Docker образы
+	@echo "$(GREEN)Сборка Docker образов...$(NC)"
+	docker-compose -f docker-compose.microservices.yml build
 
-dev: ## Запустить в режиме разработки
-	@echo "🚀 Запуск в режиме разработки..."
-	docker-compose -f $(COMPOSE_FILE) up -d
-	@echo "✅ Сервисы запущены!"
-	@echo "🌐 API: http://localhost:8000"
+build-service: ## Собрать конкретный сервис (make build-service SERVICE=gateway)
+	@echo "$(GREEN)Сборка сервиса $(SERVICE)...$(NC)"
+	docker-compose -f docker-compose.microservices.yml build $(SERVICE)
 
-prod: ## Запустить в продакшн режиме
-	@echo "🚀 Запуск в продакшн режиме..."
-	docker-compose -f $(PROD_COMPOSE_FILE) up -d
-	@echo "✅ Продакшн сервисы запущены!"
-	@echo "🌐 API: http://localhost:8000"
-	@echo "📊 Мониторинг: http://localhost:9090"
+up: ## Запустить все микросервисы
+	@echo "$(GREEN)Запуск микросервисов...$(NC)"
+	docker-compose -f docker-compose.microservices.yml up -d
+	@sleep 10
+	@make status
 
-up: dev ## Запустить (алиас для dev)
+down: ## Остановить все микросервисы
+	@echo "$(RED)Остановка микросервисов...$(NC)"
+	docker-compose -f docker-compose.microservices.yml down
 
-down: ## Остановить все сервисы
-	docker-compose -f $(COMPOSE_FILE) down
-	docker-compose -f $(PROD_COMPOSE_FILE) down
+restart: down up ## Перезапустить все микросервисы
+
+restart-service: ## Перезапустить конкретный сервис (make restart-service SERVICE=gateway)
+	@echo "$(GREEN)Перезапуск сервиса $(SERVICE)...$(NC)"
+	docker-compose -f docker-compose.microservices.yml restart $(SERVICE)
 
 logs: ## Показать логи всех сервисов
-	docker-compose -f $(COMPOSE_FILE) logs -f
+	docker-compose -f docker-compose.microservices.yml logs -f
 
-logs-backend: ## Показать логи backend
-	docker-compose -f $(COMPOSE_FILE) logs -f backend
+logs-service: ## Показать логи конкретного сервиса (make logs-service SERVICE=gateway)
+	docker-compose -f docker-compose.microservices.yml logs -f $(SERVICE)
 
-logs-bot: ## Показать логи telegram bot
-	docker-compose -f $(COMPOSE_FILE) logs -f telegram_bot
+status: ## Проверить статус всех сервисов
+	@echo "$(GREEN)Статус микросервисов:$(NC)"
+	@docker-compose -f docker-compose.microservices.yml ps
+	@echo ""
+	@./monitor-microservices.sh
 
-status: ## Показать статус сервисов
-	docker-compose -f $(COMPOSE_FILE) ps
+health: ## Проверить здоровье системы
+	@echo "$(GREEN)Проверка здоровья системы...$(NC)"
+	@curl -s http://localhost:8000/health | jq . || echo "$(RED)Gateway недоступен$(NC)"
 
-restart: ## Перезапустить все сервисы
-	docker-compose -f $(COMPOSE_FILE) restart
+test: ## Запустить тесты API
+	@echo "$(GREEN)Тестирование API...$(NC)"
+	@python -m pytest tests/ -v || echo "$(YELLOW)Тесты не найдены$(NC)"
 
-restart-backend: ## Перезапустить backend
-	docker-compose -f $(COMPOSE_FILE) restart backend
+test-api: ## Быстрый тест основного API
+	@echo "$(GREEN)Тестирование основного API...$(NC)"
+	@curl -s -X POST http://localhost:8000/bartender/ask \
+		-H "Content-Type: application/json" \
+		-d '{"query": "Рецепт Мохито", "user_id": "test"}' | jq . || echo "$(RED)API недоступен$(NC)"
 
-restart-bot: ## Перезапустить telegram bot
-	docker-compose -f $(COMPOSE_FILE) restart telegram_bot
+scale: ## Масштабировать сервисы (make scale SERVICE=rag REPLICAS=3)
+	@echo "$(GREEN)Масштабирование $(SERVICE) до $(REPLICAS) реплик...$(NC)"
+	docker-compose -f docker-compose.microservices.yml up -d --scale $(SERVICE)=$(REPLICAS)
 
-clean: ## Очистить неиспользуемые образы и контейнеры
+clean: ## Очистить неиспользуемые Docker ресурсы
+	@echo "$(RED)Очистка Docker ресурсов...$(NC)"
 	docker system prune -f
 	docker volume prune -f
 
-clean-all: ## Полная очистка (ОСТОРОЖНО!)
-	docker-compose -f $(COMPOSE_FILE) down -v
-	docker-compose -f $(PROD_COMPOSE_FILE) down -v
+clean-all: down ## Полная очистка (включая volumes)
+	@echo "$(RED)Полная очистка...$(NC)"
+	docker-compose -f docker-compose.microservices.yml down -v --remove-orphans
 	docker system prune -af
-	docker volume prune -f
 
-health: ## Проверить здоровье сервисов
-	@echo "🏥 Проверка здоровья сервисов..."
-	@curl -f http://localhost:8000/health || echo "❌ Backend недоступен"
+backup: ## Создать бэкап векторного индекса
+	@echo "$(GREEN)Создание бэкапа...$(NC)"
+	@mkdir -p backups
+	@tar -czf backups/vectorstore_$(shell date +%Y%m%d_%H%M%S).tar.gz vectorstore/
+	@tar -czf backups/faiss_index_$(shell date +%Y%m%d_%H%M%S).tar.gz faiss_index_yandex/
+	@echo "$(GREEN)Бэкап создан в папке backups/$(NC)"
 
-shell-backend: ## Подключиться к backend контейнеру
-	docker-compose -f $(COMPOSE_FILE) exec backend bash
+restore: ## Восстановить из бэкапа (make restore BACKUP=vectorstore_20231201_120000.tar.gz)
+	@echo "$(YELLOW)Восстановление из бэкапа $(BACKUP)...$(NC)"
+	@tar -xzf backups/$(BACKUP) -C ./
 
-shell-bot: ## Подключиться к bot контейнеру
-	docker-compose -f $(COMPOSE_FILE) exec telegram_bot bash
+dev: ## Запуск в режиме разработки
+	@echo "$(GREEN)Запуск в режиме разработки...$(NC)"
+	docker-compose -f docker-compose.microservices.yml -f docker-compose.dev.yml up
 
-update: ## Обновить и перезапустить
-	git pull
-	docker-compose -f $(COMPOSE_FILE) pull
-	docker-compose -f $(COMPOSE_FILE) up -d --build
+prod: ## Запуск в продакшен режиме
+	@echo "$(GREEN)Запуск в продакшен режиме...$(NC)"
+	docker-compose -f docker-compose.microservices.yml -f docker-compose.prod.yml up -d
 
-# Команды для облачного развертывания
-push-images: ## Отправить образы в реестр
-	@echo "📤 Отправка образов в реестр..."
-	docker tag $(PROJECT_NAME)_backend:latest your-registry/$(PROJECT_NAME)-backend:latest
-	docker tag $(PROJECT_NAME)_telegram_bot:latest your-registry/$(PROJECT_NAME)-bot:latest
-	docker push your-registry/$(PROJECT_NAME)-backend:latest
-	docker push your-registry/$(PROJECT_NAME)-bot:latest
+install: ## Установка зависимостей для разработки
+	pip install -r requirements.txt
+	pip install -r requirements_api.txt
+	pip install -r requirements_bot.txt
 
-# Мониторинг
-monitor: ## Показать использование ресурсов
-	docker stats
+update: ## Обновление индекса
+	@echo "$(GREEN)Обновление векторного индекса...$(NC)"
+	@curl -s -X POST http://localhost:8002/index/update || echo "$(RED)RAG сервис недоступен$(NC)"
 
-backup: ## Создать backup данных
-	@echo "💾 Создание backup..."
-	docker run --rm -v ai-bartender_vectorstore_data:/data -v $(PWD):/backup alpine tar czf /backup/vectorstore-backup-$(shell date +%Y%m%d-%H%M%S).tar.gz -C /data .
-	docker run --rm -v ai-bartender_faiss_data:/data -v $(PWD):/backup alpine tar czf /backup/faiss-backup-$(shell date +%Y%m%d-%H%M%S).tar.gz -C /data .
+rebuild-index: ## Полная пересборка индекса
+	@echo "$(GREEN)Пересборка векторного индекса...$(NC)"
+	@curl -s -X POST http://localhost:8002/index/rebuild \
+		-H "Content-Type: application/json" \
+		-d '{"force": true}' || echo "$(RED)RAG сервис недоступен$(NC)"
+
+stats: ## Показать статистику системы
+	@echo "$(GREEN)Статистика системы:$(NC)"
+	@echo "Gateway Health:"
+	@curl -s http://localhost:8000/health | jq .
+	@echo "\nLogging Stats:"
+	@curl -s http://localhost:8005/stats | jq .
+	@echo "\nYandex API Stats:"
+	@curl -s http://localhost:8004/stats | jq .
+
+monitor: ## Непрерывный мониторинг
+	@echo "$(GREEN)Запуск мониторинга (Ctrl+C для остановки)...$(NC)"
+	@while true; do \
+		clear; \
+		make status; \
+		sleep 10; \
+	done
+
+# Полезные алиасы
+start: up
+stop: down
+ps: status
+build-all: build

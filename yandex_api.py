@@ -6,7 +6,8 @@ import json
 import time
 from typing import List, Optional, Dict, Any
 from settings import EMB_MODEL_URI, TEXT_MODEL_URI
-from yandex_jwt_auth import HEADERS, BASE_URL
+from yandex_jwt_auth import get_headers, BASE_URL
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +22,8 @@ def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retrie
 
     for attempt in range(max_retries):
         try:
-            r = requests.post(url, headers=HEADERS, json=payload, timeout=60)
+            headers = get_headers()
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
 
             if r.status_code == 200:
                 resp = r.json()
@@ -29,83 +31,100 @@ def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retrie
                 if embedding:
                     return [float(x) for x in embedding]
                 else:
-                    logger.warning("Пустой эмбеддинг в ответе, попытка %d", attempt + 1)
-            elif r.status_code == 500:
-                logger.warning("Ошибка 500 от Yandex API, попытка %d из %d", attempt + 1, max_retries)
-                if attempt < max_retries - 1:
-                    time.sleep(delay * (2 ** attempt))  # Экспоненциальная задержка
-                    continue
-            elif r.status_code == 429:
-                logger.warning("Rate limit, ожидание %d секунд", delay * 2)
-                time.sleep(delay * 2)
-                if attempt < max_retries - 1:
-                    continue
+                    logger.warning("yandex_text_embedding: no embedding in response")
+                    return []
             else:
-                logger.error("HTTP %d: %s", r.status_code, r.text)
-
-        except Exception as e:
-            logger.warning("Ошибка при получении эмбеддинга (попытка %d): %s", attempt + 1, e)
+                logger.warning(f"yandex_text_embedding: HTTP {r.status_code}, response: {r.text}")
+                if r.status_code >= 500 and attempt < max_retries - 1:
+                    logger.info(f"Server error, retrying in {delay} seconds (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    return []
+        except requests.exceptions.Timeout:
+            logger.warning(f"yandex_text_embedding: timeout on attempt {attempt + 1}")
             if attempt < max_retries - 1:
                 time.sleep(delay)
+                delay *= 2
                 continue
+            else:
+                return []
+        except Exception as e:
+            logger.error(f"yandex_text_embedding error: {e}")
+            if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
+                logger.warning("Yandex API credentials not configured - returning empty embedding")
+                return []
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            else:
+                return []
 
-    raise RuntimeError(f"Embedding error: {r.status_code}")
+    return []
 
 
-def yandex_batch_embeddings(texts: List[str], model_uri: Optional[str] = None, batch_size: int = 5) -> List[List[float]]:
+def yandex_batch_embeddings(texts: List[str], model_uri: Optional[str] = None) -> List[List[float]]:
     """
-    Пакетное получение эмбеддингов с обработкой ошибок и батчингом
+    Получение эмбеддингов для списка текстов
     """
-    out = []
-    total = len(texts)
-
-    # Обрабатываем по батчам для снижения нагрузки на API
-    for i in range(0, total, batch_size):
-        batch = texts[i:i + batch_size]
-        logger.info("Обрабатываю батч %d-%d из %d текстов", i + 1, min(i + batch_size, total), total)
-
-        for j, text in enumerate(batch):
-            try:
-                embedding = yandex_text_embedding(text, model_uri=model_uri)
-                out.append(embedding)
-
-                # Небольшая задержка между запросами
-                if j < len(batch) - 1:
-                    time.sleep(0.1)
-
-            except Exception as e:
-                logger.error("Не удалось получить эмбеддинг для текста %d: %s", i + j + 1, e)
-                # Добавляем нулевой вектор как fallback
-                out.append([0.0] * 256)  # Размер вектора Yandex
-
-        # Задержка между батчами
-        if i + batch_size < total:
-            time.sleep(0.5)
-
-    logger.info("Получено эмбеддингов: %d из %d", len([e for e in out if sum(e) != 0]), total)
-    return out
+    embeddings = []
+    for text in texts:
+        emb = yandex_text_embedding(text, model_uri)
+        embeddings.append(emb)
+    return embeddings
 
 
-def yandex_completion(messages: List[dict], model_uri: Optional[str] = None, temperature: float = 0.2, max_tokens: int = 1024) -> dict:
+def yandex_completion(prompt, model_uri: Optional[str] = None, max_tokens: int = 2000, temperature: float = 0.3) -> Dict[str, Any]:
+    """
+    Получение текстового ответа от YandexGPT
+    """
     if model_uri is None:
         model_uri = TEXT_MODEL_URI
+
     url = f"{BASE_URL}/completion"
+
+    # Форматируем промпт в правильный формат для API
+    if isinstance(prompt, list):
+        messages = []
+        for msg in prompt:
+            if isinstance(msg, dict) and "role" in msg and "text" in msg:
+                messages.append({
+                    "role": msg["role"],
+                    "text": msg["text"]
+                })
+        prompt_formatted = messages
+    elif isinstance(prompt, str):
+        prompt_formatted = [{"role": "user", "text": prompt}]
+    else:
+        prompt_formatted = [{"role": "user", "text": str(prompt)}]
+
     payload = {
         "modelUri": model_uri,
-        "completionOptions": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens)},
-        "messages": messages
+        "completionOptions": {
+            "stream": False,
+            "temperature": temperature,
+            "maxTokens": max_tokens
+        },
+        "messages": prompt_formatted
     }
-    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
-    if r.status_code != 200:
-        logger.error("yandex_completion error %s %s", r.status_code, r.text)
-        return {"error": True, "status_code": r.status_code, "text": r.text}
+
     try:
-        j = r.json()
+        headers = get_headers()
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"yandex_completion: HTTP {response.status_code}, response: {response.text}")
+            return {"error": f"HTTP {response.status_code}: {response.text}"}
+
     except Exception as e:
-        logger.exception("Failed to parse yandex_completion json: %s", e)
-        return {"error": True, "reason": "invalid_json", "text": r.text}
-    logger.debug("yandex_completion raw json: %s", json.dumps(j, ensure_ascii=False))
-    return j
+        logger.error(f"yandex_completion error: {e}")
+        if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
+            return {"error": "Yandex API credentials not configured"}
+        return {"error": str(e)}
 
 
 def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Optional[List[dict]] = None) -> dict:
@@ -121,8 +140,16 @@ def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Option
     payload: Dict[str, Any] = {"modelUri": model_uri, "text": text}
     if examples:
         payload["examples"] = examples
-    resp = requests.post(url, headers=HEADERS, json=payload, timeout=15)
-    if resp.status_code != 200:
-        logger.error("yandex_classify error %s %s", resp.status_code, resp.text)
-        return {"error": True, "status_code": resp.status_code, "text": resp.text}
-    return resp.json()
+
+    try:
+        headers = get_headers()
+        resp = requests.post(url, headers=headers, json=payload, timeout=15)
+        if resp.status_code != 200:
+            logger.error("yandex_classify error %s %s", resp.status_code, resp.text)
+            return {"error": True, "status_code": resp.status_code, "text": resp.text}
+        return resp.json()
+    except Exception as e:
+        logger.error(f"yandex_classify error: {e}")
+        if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
+            return {"error": "Yandex API credentials not configured"}
+        return {"error": str(e)}

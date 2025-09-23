@@ -1,0 +1,179 @@
+services:
+  # Gateway Service - единый входной API
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GATEWAY_HOST=0.0.0.0
+      - GATEWAY_PORT=8000
+      - TELEGRAM_SERVICE_URL=http://telegram:8001
+      - RAG_SERVICE_URL=http://rag:8002
+      - VALIDATION_SERVICE_URL=http://validation:8003
+      - YANDEX_SERVICE_URL=http://yandex:8004
+      - LOGGING_SERVICE_URL=http://logging:8005
+      - LOCKBOX_SERVICE_URL=http://lockbox:8006
+    depends_on:
+      - telegram
+      - rag
+      - validation
+      - yandex
+      - logging
+      - lockbox
+    restart: unless-stopped
+    networks:
+      - bartender-net
+    volumes:
+      - ./logs:/app/logs
+
+  # Telegram Bot Service
+  telegram:
+    build:
+      context: .
+      dockerfile: services/telegram/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - TELEGRAM_SERVICE_HOST=0.0.0.0
+      - TELEGRAM_SERVICE_PORT=8001
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - GATEWAY_URL=http://gateway:8000
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # RAG Service
+  rag:
+    build:
+      context: .
+      dockerfile: services/rag/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - RAG_SERVICE_HOST=0.0.0.0
+      - RAG_SERVICE_PORT=8002
+      - VECTORSTORE_DIR=/app/vectorstore
+      - SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_ID}
+      - KEY_ID=${KEY_ID}
+      - FOLDER_ID=${FOLDER_ID}
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YAND_EMBEDDING_MODEL_URI=${YAND_EMBEDDING_MODEL_URI}
+      - YAND_TEXT_MODEL_URI=${YAND_TEXT_MODEL_URI}
+      - S3_BUCKET=${S3_BUCKET:-rag-docs-trusted}
+      - S3_PREFIX=${S3_PREFIX:-docs/}
+      - S3_ENDPOINT=${S3_ENDPOINT:-https://storage.yandexcloud.net}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+    volumes:
+      - ./vectorstore:/app/vectorstore
+      - ./faiss_index_yandex:/app/faiss_index_yandex
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # Validation Service
+  validation:
+    build:
+      context: .
+      dockerfile: services/validation/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - VALIDATION_SERVICE_HOST=0.0.0.0
+      - VALIDATION_SERVICE_PORT=8003
+      - SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_ID}
+      - KEY_ID=${KEY_ID}
+      - FOLDER_ID=${FOLDER_ID}
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YAND_EMBEDDING_MODEL_URI=${YAND_EMBEDDING_MODEL_URI}
+      - YAND_TEXT_MODEL_URI=${YAND_TEXT_MODEL_URI}
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # Yandex API Service
+  yandex:
+    build:
+      context: .
+      dockerfile: services/yandex/Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - YANDEX_SERVICE_HOST=0.0.0.0
+      - YANDEX_SERVICE_PORT=8004
+      - SERVICE_ACCOUNT_ID=${SERVICE_ACCOUNT_ID}
+      - KEY_ID=${KEY_ID}
+      - FOLDER_ID=${FOLDER_ID}
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YAND_EMBEDDING_MODEL_URI=${YAND_EMBEDDING_MODEL_URI}
+      - YAND_TEXT_MODEL_URI=${YAND_TEXT_MODEL_URI}
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # Lockbox Service
+  lockbox:
+    build:
+      context: .
+      dockerfile: services/lockbox/Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      - LOCKBOX_SERVICE_HOST=0.0.0.0
+      - LOCKBOX_SERVICE_PORT=8006
+      - IAM_TOKEN=${IAM_TOKEN}
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # Logging Service
+  logging:
+    build:
+      context: .
+      dockerfile: services/logging/Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      - LOGGING_SERVICE_HOST=0.0.0.0
+      - LOGGING_SERVICE_PORT=8005
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+  # Redis для кеширования (опционально)
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - bartender-net
+    volumes:
+      - redis-data:/data
+
+  # PostgreSQL для логов и статистики (опционально)
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_DB=bartender
+      - POSTGRES_USER=bartender
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-defaultpassword123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - bartender-net
+
+networks:
+  bartender-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:
