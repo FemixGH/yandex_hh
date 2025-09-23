@@ -13,7 +13,13 @@ COPY bartender_file_handler.py .
 COPY incremental_rag.py .
 COPY yandex_api.py .
 COPY yandex_jwt_auth.py .
+COPY lockbox_loader.py .
+# добавлено для модерации
 COPY moderation_yandex.py .
+
+# Копируем готовые индексы (если есть в репозитории)
+COPY faiss_index_yandex/ ./faiss_index_yandex/
+COPY vectorstore/ ./vectorstore/
 
 # Копируем файлы RAG сервиса
 COPY services/rag/ ./services/rag/

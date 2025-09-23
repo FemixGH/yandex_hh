@@ -141,7 +141,7 @@ echo "[DEPLOY] rag"
 RAG_ENV=(
   "RAG_SERVICE_HOST=0.0.0.0"
   "RAG_SERVICE_PORT=8080"
-  "VECTORSTORE_DIR=/tmp/vectorstore"
+  "VECTORSTORE_DIR=/app/vectorstore"
   "FOLDER_ID=${FOLDER_ID}"
   "S3_ENDPOINT=${S3_ENDPOINT}"
   "S3_BUCKET=${S3_BUCKET}"
