@@ -6,7 +6,7 @@ import json
 import time
 from typing import List, Optional, Dict, Any
 from settings import EMB_MODEL_URI, TEXT_MODEL_URI
-from services.auth.auth import HEADERS, BASE_URL
+from services.auth.auth import get_headers, BASE_URL
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +21,7 @@ def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retrie
 
     for attempt in range(max_retries):
         try:
-            r = requests.post(url, headers=HEADERS, json=payload, timeout=60)
+            r = requests.post(url, headers=get_headers(), json=payload, timeout=60)
 
             if r.status_code == 200:
                 resp = r.json()
@@ -95,7 +95,7 @@ def yandex_completion(messages: List[dict], model_uri: Optional[str] = None, tem
         "completionOptions": {"stream": False, "temperature": temperature, "maxTokens": str(max_tokens)},
         "messages": messages
     }
-    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
+    r = requests.post(url, headers=get_headers(), json=payload, timeout=30)
     if r.status_code != 200:
         logger.error("yandex_completion error %s %s", r.status_code, r.text)
         return {"error": True, "status_code": r.status_code, "text": r.text}
@@ -121,7 +121,7 @@ def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Option
     payload: Dict[str, Any] = {"modelUri": model_uri, "text": text}
     if examples:
         payload["examples"] = examples
-    resp = requests.post(url, headers=HEADERS, json=payload, timeout=15)
+    resp = requests.post(url, headers=get_headers(), json=payload, timeout=15)
     if resp.status_code != 200:
         logger.error("yandex_classify error %s %s", resp.status_code, resp.text)
         return {"error": True, "status_code": resp.status_code, "text": resp.text}
