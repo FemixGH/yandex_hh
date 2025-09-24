@@ -95,32 +95,53 @@ def get_iam_token():
     return exchange_jwt_for_iam_token(jwt_token)
 
 
+def _with_folder(headers: dict) -> dict:
+    if FOLDER_ID:
+        headers["X-Folder-Id"] = FOLDER_ID
+    return headers
+
+
 def get_headers():
-    """Заголовки для Yandex API: сначала API Key, затем IAM токен."""
-    # 0) Предпочтительно: явный API-ключ (проще для Serverless)
+    """Заголовки для Yandex API.
+    Предпочитаем IAM (Bearer) в Serverless/VM окружениях, Api-Key используем как запасной вариант.
+    """
+    # 1) Быстрый путь: IAM из метаданных/ENV (Serverless/VM)
+    try:
+        meta_token = get_iam_token_from_metadata()
+        if meta_token:
+            logger.info("Используем IAM (metadata) для авторизации Yandex API")
+            return _with_folder({
+                "Authorization": f"Bearer {meta_token}",
+                "Content-Type": "application/json",
+            })
+    except Exception as e:
+        logger.warning(f"Не удалось получить IAM из метаданных: {e}")
+
+    # 2) Явно заданный IAM_TOKEN или JWT-обмен при наличии SA-ключей
+    try:
+        # Использует ENV->metadata->JWT
+        iam_token = get_iam_token()
+        if iam_token:
+            logger.info("Используем IAM (env/jwt) для авторизации Yandex API")
+            return _with_folder({
+                "Authorization": f"Bearer {iam_token}",
+                "Content-Type": "application/json",
+            })
+    except Exception as e:
+        logger.warning(f"IAM недоступен (env/jwt): {e}")
+
+    # 3) Запасной вариант: явный API Key
     api_key = os.environ.get("YANDEX_API_KEY")
     if api_key:
-        headers = {
+        logger.info("Используем Api-Key для авторизации Yandex API")
+        return _with_folder({
             "Authorization": f"Api-Key {api_key}",
             "Content-Type": "application/json",
-        }
-        if FOLDER_ID:
-            headers["X-Folder-Id"] = FOLDER_ID
-        return headers
+        })
 
-    # 1) Иначе — пытаемся взять IAM токен
-    try:
-        iam_token = get_iam_token()
-        headers = {
-            "Authorization": f"Bearer {iam_token}",
-            "Content-Type": "application/json"
-        }
-        if FOLDER_ID:
-            headers["X-Folder-Id"] = FOLDER_ID
-        return headers
-    except Exception as e:
-        logger.error(f"Failed to get Yandex API headers: {e}")
-        raise
+    # 4) Нет доступных кредов
+    logger.error("Нет доступных кредов для Yandex API: ни IAM, ни Api-Key")
+    raise RuntimeError("No Yandex API credentials available")
 
 # Initialize constants that don't require API access
 BASE_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1"
