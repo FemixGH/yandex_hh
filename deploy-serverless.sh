@@ -169,6 +169,13 @@ VALIDATION_URL="$(yc serverless container get --name validation --format json | 
 YANDEX_URL="$(yc serverless container get --name yandex --format json | jq -r '.url')"
 RAG_URL="$(yc serverless container get --name rag --format json | jq -r '.url')"
 
+# Уберём хвостовые слэши для безопасности
+LOCKBOX_URL=${LOCKBOX_URL%/}
+LOGGING_URL=${LOGGING_URL%/}
+VALIDATION_URL=${VALIDATION_URL%/}
+YANDEX_URL=${YANDEX_URL%/}
+RAG_URL=${RAG_URL%/}
+
 echo "[INFO] URLs:"
 echo "  LOCKBOX_URL    = ${LOCKBOX_URL}"
 echo "  LOGGING_URL    = ${LOGGING_URL}"
@@ -183,11 +190,12 @@ yc serverless container revision deploy \
   --container-name gateway \
   --image "${REGISTRY}/gateway:latest" \
   --service-account-id "${SA_ID}" \
-  --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
+  --cores 1 --memory 512MB --concurrency 16 --execution-timeout 60s \
   --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}",SECRET_ID="${SECRET_ID}",EXPOSE_LOCKBOX_PROXY=false >/dev/null
 
 yc serverless container allow-unauthenticated-invoke --name gateway >/dev/null 2>&1 || true
 GATEWAY_URL="$(yc serverless container get --name gateway --format json | jq -r '.url')"
+GATEWAY_URL=${GATEWAY_URL%/}
 echo "[INFO] GATEWAY_URL = ${GATEWAY_URL}"
 
 # --------- Deploy telegram ---------
@@ -200,7 +208,7 @@ TELEGRAM_ENV=(
   "GATEWAY_URL=${GATEWAY_URL}"
   "SECRET_ID=${SECRET_ID}"
   "USE_WEBHOOK=true"
-  "WEBHOOK_URL=${GATEWAY_URL}/telegram/webhook"
+  "WEBHOOK_URL=${GATEWAY_URL%/}/telegram/webhook"
 )
 # Добавим секрет токена вебхука, если он задан
 if [[ -n "${WEBHOOK_SECRET_TOKEN}" ]]; then
@@ -222,6 +230,7 @@ yc serverless container revision deploy \
 
 yc serverless container allow-unauthenticated-invoke --name telegram >/dev/null 2>&1 || true
 TELEGRAM_URL="$(yc serverless container get --name telegram --format json | jq -r '.url')"
+TELEGRAM_URL=${TELEGRAM_URL%/}
 echo "[INFO] TELEGRAM_URL = ${TELEGRAM_URL}"
 
 echo "[DEPLOY] gateway (update with TELEGRAM url)"
@@ -229,7 +238,7 @@ yc serverless container revision deploy \
   --container-name gateway \
   --image "${REGISTRY}/gateway:latest" \
   --service-account-id "${SA_ID}" \
-  --cores 1 --memory 512MB --concurrency 16 --execution-timeout 15s \
+  --cores 1 --memory 512MB --concurrency 16 --execution-timeout 60s \
   --environment GATEWAY_HOST=0.0.0.0,GATEWAY_PORT=8080,LOCKBOX_SERVICE_URL="${LOCKBOX_URL}",LOGGING_SERVICE_URL="${LOGGING_URL}",VALIDATION_SERVICE_URL="${VALIDATION_URL}",YANDEX_SERVICE_URL="${YANDEX_URL}",RAG_SERVICE_URL="${RAG_URL}",TELEGRAM_SERVICE_URL="${TELEGRAM_URL}",SECRET_ID="${SECRET_ID}",EXPOSE_LOCKBOX_PROXY=false >/dev/null
 
 # --------- Summary ---------

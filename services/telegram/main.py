@@ -44,6 +44,24 @@ USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() in {"1", "true", "yes"}
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Публичный URL API Gateway, например: https://<id>.apigw.yandexcloud.net/telegram/webhook
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")  # Совпадает с тем, что задан в setWebhook
 
+# Нормализуем URL вебхука (убираем двойные слэши после домена)
+def _normalize_webhook_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return url
+    try:
+        if "://" in url:
+            scheme, rest = url.split("://", 1)
+            # Не трогаем протокол, в остальном схлопываем двойные слэши
+            rest = rest.replace("//", "/")
+            # Уберём возможный лишний слэш в конце
+            return f"{scheme}://{rest}".rstrip("/")
+        # Без схемы — просто схлопнем
+        return url.replace("//", "/").rstrip("/")
+    except Exception:
+        return url
+
+WEBHOOK_URL_NORMALIZED = _normalize_webhook_url(WEBHOOK_URL)
+
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не установлен")
 
@@ -229,7 +247,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🔸 *Сначала примите условия использования* командой /start\n"
         "🔸 *Потом просто напишите запрос* — я найду подходящие коктейли\n"
         "🔸 *Укажите ингредиенты* — получите рецепты с ними\n"
-        "🔸 *Спросите про конкретный коктейль* — узнаете рецепт и историю\n\n"
+        "🔸 *Спросите про конкретный коктейль* — узнаете рецепт и истории\n\n"
         "*Примеры:*\n• \"Коктейли с джином\"\n• \"Рецепт Маргариты\"  \n• \"Что приготовить на вечеринку?\"\n• \"Безалкогольные коктейли\"\n"
     )
     await update.message.reply_text(help_text, parse_mode='MarkdownV2')
@@ -379,10 +397,10 @@ async def setup_bot():
     await telegram_app.initialize()
     await telegram_app.start()
 
-    if USE_WEBHOOK and WEBHOOK_URL:
+    if USE_WEBHOOK and WEBHOOK_URL_NORMALIZED:
         # В облаке используем webhook
-        await telegram_app.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET_TOKEN)
-        logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+        await telegram_app.bot.set_webhook(url=WEBHOOK_URL_NORMALIZED, secret_token=WEBHOOK_SECRET_TOKEN)
+        logger.info(f"Webhook установлен: {WEBHOOK_URL_NORMALIZED}")
     else:
         # Локально используем polling
         try:
@@ -449,7 +467,7 @@ async def webhook_info():
         info = await telegram_app.bot.get_webhook_info()
         return {
             "use_webhook": USE_WEBHOOK,
-            "configured_webhook_url": WEBHOOK_URL,
+            "configured_webhook_url": WEBHOOK_URL_NORMALIZED,
             "secret_set": bool(WEBHOOK_SECRET_TOKEN),
             "telegram": {
                 "url": info.url,
@@ -472,13 +490,13 @@ async def webhook_sync():
     global telegram_app
     if not telegram_app:
         raise HTTPException(status_code=503, detail="Бот не запущен")
-    if not (USE_WEBHOOK and WEBHOOK_URL):
+    if not (USE_WEBHOOK and WEBHOOK_URL_NORMALIZED):
         raise HTTPException(status_code=400, detail="Webhook режим не активирован")
     try:
-        await telegram_app.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET_TOKEN)
+        await telegram_app.bot.set_webhook(url=WEBHOOK_URL_NORMALIZED, secret_token=WEBHOOK_SECRET_TOKEN)
         info = await telegram_app.bot.get_webhook_info()
-        logger.info("Webhook переустановлен: %s", WEBHOOK_URL)
-        return {"success": True, "url": WEBHOOK_URL, "telegram_url": info.url}
+        logger.info("Webhook переустановлен: %s", WEBHOOK_URL_NORMALIZED)
+        return {"success": True, "url": WEBHOOK_URL_NORMALIZED, "telegram_url": info.url}
     except Exception as e:
         logger.error(f"Ошибка установки вебхука: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -508,7 +526,7 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Op
     """Эндпоинт для приёма вебхуков от Telegram. Возвращаем ACK быстро, обработку запускаем в фоне."""
     global telegram_app
 
-    if not (USE_WEBHOOK and WEBHOOK_URL):
+    if not (USE_WEBHOOK and WEBHOOK_URL_NORMALIZED):
         raise HTTPException(status_code=400, detail="Webhook режим не активирован")
 
     if WEBHOOK_SECRET_TOKEN:
@@ -572,7 +590,7 @@ if __name__ == "__main__":
     host = os.getenv("TELEGRAM_SERVICE_HOST", "0.0.0.0")
     port = int(os.getenv("PORT", os.getenv("TELEGRAM_SERVICE_PORT", "8001")))
 
-    logger.info(f"Запуск Telegram Bot Service на {host}:{port} (mode={'webhook' if USE_WEBHOOK and WEBHOOK_URL else 'polling'})")
+    logger.info(f"Запуск Telegram Bot Service на {host}:{port} (mode={'webhook' if USE_WEBHOOK and WEBHOOK_URL_NORMALIZED else 'polling'})")
 
     uvicorn.run(
         "main:app",
