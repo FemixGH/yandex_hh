@@ -72,22 +72,25 @@ def preprocess_bartender_query(user_text: str) -> str:
     logger.info(f"Preprocessed query: {user_text[:50]}... -> {processed_text[:100]}...")
     return processed_text
 
-def quick_check(text: str) -> Tuple[bool, dict]:
+def quick_check(text: str) -> Tuple[bool, str]:
+    """
+    Быстрая проверка: возвращает (ok, reason_str). reason_str всегда строка для pydantic совместимости.
+    """
     # Сначала проверяем белый список - если есть совпадение, сразу разрешаем
     for pat in SAFE_COMPILED:
         if pat.search(text):
-            return True, {"reason": "safe_pattern", "pattern": pat.pattern}
+            return True, f"safe_pattern:{pat.pattern}"
 
     # Затем проверяем опасные паттерны
     for pat in COMPILED:
         if pat.search(text):
             logger.warning("quick_check blocked pattern %s", pat.pattern)
-            return False, {"reason": "pattern", "pattern": pat.pattern}
-    return True, {}
+            return False, f"pattern:{pat.pattern}"
+    return True, "pass"
 
-def llm_moderation_yandex(text: str) -> Tuple[bool, dict]:
+def llm_moderation_yandex(text: str) -> Tuple[bool, str]:
     """
-    Надёжная версия: всегда возвращает (ok: bool, meta: dict).
+    Всегда возвращает (ok: bool, reason: str) для совместимости с Pydantic-моделью ModerationResponse.
     Использует LLM (yandex_completion) и гарантирует fallback в случае ошибок.
     """
     try:
@@ -107,7 +110,7 @@ def llm_moderation_yandex(text: str) -> Tuple[bool, dict]:
         cresp = yandex_completion(prompt)
         if cresp.get("error"):
             logger.warning("llm_moderation_yandex: completion returned error: %s", cresp)
-            return True, {"via": "completion_error", "raw": cresp}
+            return True, "SAFE:completion_error"
 
         # log raw response for debugging
         logger.debug("llm_moderation raw json: %s", json.dumps(cresp, ensure_ascii=False))
@@ -116,40 +119,43 @@ def llm_moderation_yandex(text: str) -> Tuple[bool, dict]:
         # If model returned nothing sensible, treat as SAFE by default (for user queries)
         if not txt or txt.strip() == "" or txt.strip().lower() == "assistant":
             logger.info("llm_moderation_yandex: model returned empty text; treating as SAFE")
-            return True, {"via": "completion", "label": "SAFE", "raw_text": txt}
+            return True, "SAFE:empty"
 
         label = "SAFE" if "SAFE" in txt.upper() else "UNSAFE"
-        return (label == "SAFE"), {"via": "completion", "label": label, "raw_text": txt}
+        return (label == "SAFE"), label
     except Exception as e:
         logger.exception("llm_moderation_yandex exception: %s", e)
-        # безопасный fallback — считать текст безопасным, но пометить в метаданных
-        return True, {"via": "exception", "error": str(e)}
+        # безопасный fallback — считать текст безопасным, но показать причину в строке
+        return True, f"SAFE:exception:{str(e)[:200]}"
 
-def pre_moderate_input(text: str) -> Tuple[bool, dict]:
+def pre_moderate_input(text: str) -> Tuple[bool, str]:
     """
-    Надёжно вызывает quick_check + llm_moderation_yandex и ВЕРНЁТ кортеж в любом случае.
+    Надёжно вызывает quick_check + llm_moderation_yandex и ВЕРНЁТ (ok, reason_str) в любом случае.
     """
     try:
-        ok, meta = quick_check(text)
+        ok, reason = quick_check(text)
         if not ok:
-            return False, meta  # quick_check уже возвращает объяснение
-        res = llm_moderation_yandex(text)
-        # защита на случай, если llm_moderation_yandex вдруг вернёт None или не кортеж
-        if not isinstance(res, tuple) or len(res) != 2:
-            logger.warning("pre_moderate_input: llm_moderation_yandex returned unexpected value: %r", res)
-            return True, {"via": "fallback", "reason": "llm_moderation_bad_return"}
-        return res
+            return False, reason  # quick_check уже даёт строковую причину
+        ok2, reason2 = llm_moderation_yandex(text)
+        # защита на случай нестрогих возвратов
+        if not isinstance(ok2, bool) or not isinstance(reason2, str):
+            logger.warning("pre_moderate_input: llm_moderation_yandex returned unexpected value: %r, %r", ok2, reason2)
+            return True, "SAFE:fallback"
+        return ok2, reason2
     except Exception as e:
         logger.exception("pre_moderate_input exception: %s", e)
         # по безопасности — пусть запрос пройдёт модерацию (можно поменять поведение)
-        return True, {"via": "exception", "error": str(e)}
+        return True, f"SAFE:exception:{str(e)[:200]}"
 
-def post_moderate_output(text: str) -> Tuple[bool, dict]:
-    # quick pattern check first
+def post_moderate_output(text: str) -> Tuple[bool, str]:
+    """
+    Постмодерация текста ответа. Возвращает (ok, reason_str). Если найден запрещённый паттерн — блокируем.
+    """
     for pat in COMPILED:
         if pat.search(text):
-            return False, {"reason": "post_pattern", "pattern": pat.pattern}
+            return False, f"post_pattern:{pat.pattern}"
     return llm_moderation_yandex(text)
+
 
 def extract_text_from_yandex_completion(resp_json: dict) -> str:
     """
