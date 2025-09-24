@@ -18,6 +18,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from yandex_api import yandex_completion, yandex_text_embedding, yandex_batch_embeddings
+from moderation_yandex import extract_text_from_yandex_completion  # добавлено
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -60,7 +61,7 @@ class EmbeddingResponse(BaseModel):
 
 class BatchEmbeddingRequest(BaseModel):
     """Модель запроса пакетного эмбеддинга"""
-    texts: List[str] = Field(..., description="Список текстов для эмбеддинга", min_items=1, max_items=100)
+    texts: List[str] = Field(..., description="Список текстов для эмбеддинга")
     model_uri: Optional[str] = Field(None, description="URI модели эмбеддинга")
 
 class BatchEmbeddingResponse(BaseModel):
@@ -120,15 +121,22 @@ async def generate_completion(request: CompletionRequest):
             temperature=request.temperature
         )
 
-        if not response:
+        if not response or isinstance(response, dict) and response.get("error"):
             raise HTTPException(status_code=500, detail="Не удалось получить ответ от Yandex GPT")
 
+        # Извлекаем текст из совместимого формата ответа
+        text = extract_text_from_yandex_completion(response) if isinstance(response, dict) else str(response)
+        if not text:
+            raise HTTPException(status_code=500, detail="Пустой ответ модели")
+
         return CompletionResponse(
-            text=response,
+            text=text,
             model_uri=request.model_uri,
             tokens_used=None  # Yandex API не возвращает информацию о токенах
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Ошибка генерации текста: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Ошибка генерации: {str(e)}")

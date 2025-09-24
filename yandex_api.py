@@ -1,146 +1,176 @@
 # yandex_api.py
-import os
 import logging
-import requests
-import json
+import os
 import time
-from typing import List, Optional, Dict, Any
-from settings import EMB_MODEL_URI, TEXT_MODEL_URI
-from yandex_jwt_auth import get_headers, BASE_URL
+from typing import Any, Dict, List, Optional
+
+import requests
+from settings import (
+    EMB_MODEL_URI,
+    FOLDER_ID,
+    TEXT_MODEL_NAME,
+    TEXT_MODEL_VERSION,
+    TEXT_MODEL_URI,
+    YANDEX_API_KEY,
+)
+from yandex_jwt_auth import BASE_URL, get_headers, get_iam_token
 
 logger = logging.getLogger(__name__)
 
+# --- ML SDK init (lazy) ---
+_SDK = None
 
-def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retries: int = 3, delay: float = 1.0) -> List[float]:
+
+def _get_sdk():
+    global _SDK
+    if _SDK is not None:
+        return _SDK
+    try:
+        from yandex_cloud_ml_sdk import YCloudML  # type: ignore
+    except Exception as e:
+        logger.error("Yandex Cloud ML SDK не установлен: %s", e)
+        raise
+
+    # Предпочитаем API-ключ; если нет — используем IAM-токен
+    if YANDEX_API_KEY:
+        auth_token = YANDEX_API_KEY
+        logger.info("Инициализация Yandex ML SDK с API-ключом")
+    else:
+        auth_token = get_iam_token()
+        logger.info("Инициализация Yandex ML SDK с IAM токеном")
+
+    if not FOLDER_ID:
+        raise RuntimeError("FOLDER_ID не задан для инициализации Yandex ML SDK")
+
+    _SDK = YCloudML(folder_id=FOLDER_ID, auth=auth_token)
+    return _SDK
+
+
+def yandex_text_embedding(
+    text: str, model_uri: Optional[str] = None, max_retries: int = 3, delay: float = 1.0
+) -> List[float]:
     """
-    Получение эмбеддинга текста с повторными попытками при ошибках сервера
+    Получение эмбеддинга текста с повторными попытками при ошибках сервера (REST API).
     """
-    if model_uri is None:
-        model_uri = EMB_MODEL_URI
+    uri = model_uri or EMB_MODEL_URI
     url = f"{BASE_URL}/textEmbedding"
-    payload = {"modelUri": model_uri, "text": text}
+    payload = {"modelUri": uri, "text": text}
 
     for attempt in range(max_retries):
         try:
             headers = get_headers()
             r = requests.post(url, headers=headers, json=payload, timeout=60)
-
             if r.status_code == 200:
                 resp = r.json()
                 embedding = resp.get("embedding")
-                if embedding:
-                    return [float(x) for x in embedding]
-                else:
-                    logger.warning("yandex_text_embedding: no embedding in response")
-                    return []
-            else:
-                logger.warning(f"yandex_text_embedding: HTTP {r.status_code}, response: {r.text}")
-                if r.status_code >= 500 and attempt < max_retries - 1:
-                    logger.info(f"Server error, retrying in {delay} seconds (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(delay)
-                    delay *= 2  # Exponential backoff
-                    continue
-                else:
-                    return []
+                return [float(x) for x in embedding] if embedding else []
+            logger.warning("yandex_text_embedding: HTTP %s %s", r.status_code, r.text)
+            if r.status_code >= 500 and attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return []
         except requests.exceptions.Timeout:
-            logger.warning(f"yandex_text_embedding: timeout on attempt {attempt + 1}")
+            logger.warning("yandex_text_embedding: timeout on attempt %d", attempt + 1)
             if attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            else:
-                return []
+            return []
         except Exception as e:
-            logger.error(f"yandex_text_embedding error: {e}")
-            if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
-                logger.warning("Yandex API credentials not configured - returning empty embedding")
-                return []
+            logger.error("yandex_text_embedding error: %s", e)
             if attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            else:
-                return []
-
+            return []
     return []
 
 
 def yandex_batch_embeddings(texts: List[str], model_uri: Optional[str] = None) -> List[List[float]]:
-    """
-    Получение эмбеддингов для списка текстов
-    """
-    embeddings = []
-    for text in texts:
-        emb = yandex_text_embedding(text, model_uri)
-        embeddings.append(emb)
-    return embeddings
+    return [yandex_text_embedding(t, model_uri) for t in texts]
 
 
-def yandex_completion(prompt, model_uri: Optional[str] = None, max_tokens: int = 2000, temperature: float = 0.3) -> Dict[str, Any]:
-    """
-    Получение текстового ответа от YandexGPT
-    """
-    if model_uri is None:
-        model_uri = TEXT_MODEL_URI
+def _normalize_sdk_alternatives(result) -> Dict[str, Any]:
+    """Нормализация результата SDK к формату {alternatives:[{message:{role,text}}]}"""
+    alternatives: List[Dict[str, Any]] = []
+    try:
+        for alt in result:
+            role = getattr(alt, "role", "assistant") or "assistant"
+            text = getattr(alt, "text", None)
+            if isinstance(alt, str) and text is None:
+                text = alt
+            if text is None and isinstance(alt, dict):
+                text = alt.get("text")
+                role = alt.get("role", role)
+            alternatives.append({"message": {"role": role, "text": text or ""}})
+    except Exception as e:
+        logger.warning("Normalize SDK result failed: %s", e)
+    return {"alternatives": alternatives, "model": {"name": TEXT_MODEL_NAME, "version": TEXT_MODEL_VERSION}}
 
-    url = f"{BASE_URL}/completion"
 
-    # Форматируем промпт в правильный формат для API
+def yandex_completion(
+    prompt, model_uri: Optional[str] = None, max_tokens: int = 2000, temperature: float = 0.3
+) -> Dict[str, Any]:
+    """
+    Генерация текста через Yandex Cloud ML SDK (llama/latest по умолчанию).
+    Возвращает словарь с ключом 'alternatives' для совместимости с существующим кодом.
+    """
+    # Приводим промпт к messages
     if isinstance(prompt, list):
-        messages = []
+        messages: List[Dict[str, str]] = []
         for msg in prompt:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
-                messages.append({
-                    "role": msg["role"],
-                    "text": msg["text"]
-                })
-        prompt_formatted = messages
+                messages.append({"role": str(msg["role"]), "text": str(msg["text"])})
     elif isinstance(prompt, str):
-        prompt_formatted = [{"role": "user", "text": prompt}]
+        messages = [{"role": "user", "text": prompt}]
     else:
-        prompt_formatted = [{"role": "user", "text": str(prompt)}]
+        messages = [{"role": "user", "text": str(prompt)}]
 
-    payload = {
-        "modelUri": model_uri,
-        "completionOptions": {
-            "stream": False,
-            "temperature": temperature,
-            "maxTokens": max_tokens
-        },
-        "messages": prompt_formatted
-    }
-
+    # Попытка SDK
     try:
-        headers = get_headers()
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"yandex_completion: HTTP {response.status_code}, response: {response.text}")
-            return {"error": f"HTTP {response.status_code}: {response.text}"}
-
+        sdk = _get_sdk()
+        model = sdk.models.completions(TEXT_MODEL_NAME, model_version=TEXT_MODEL_VERSION)
+        try:
+            model = model.configure(temperature=temperature)
+        except Exception:
+            pass
+        result = model.run(messages)
+        return _normalize_sdk_alternatives(result)
     except Exception as e:
-        logger.error(f"yandex_completion error: {e}")
-        if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
-            return {"error": "Yandex API credentials not configured"}
-        return {"error": str(e)}
+        logger.exception("yandex_completion via SDK failed: %s", e)
+        # REST fallback
+        try:
+            mu = model_uri or TEXT_MODEL_URI
+            if not mu:
+                return {"error": f"SDK error: {e}"}
+            url = f"{BASE_URL}/completion"
+            payload = {
+                "modelUri": mu,
+                "completionOptions": {
+                    "stream": False,
+                    "temperature": temperature,
+                    "maxTokens": max_tokens,
+                },
+                "messages": messages,
+            }
+            headers = get_headers()
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 200:
+                return resp.json()
+            logger.error("yandex_completion REST fallback: HTTP %s %s", resp.status_code, resp.text)
+            return {"error": f"HTTP {resp.status_code}: {resp.text}"}
+        except Exception as e2:
+            logger.error("yandex_completion REST fallback failed: %s", e2)
+            return {"error": str(e)}
 
 
 def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Optional[List[dict]] = None) -> dict:
-    """
-    Используем TextClassification API (если нужно) для модерации/разметки.
-    Док: TextClassification.Classify (REST).
-    NOTE: в некоторых акках требуется gRPC; здесь — пример REST через endpoint /textClassification/classify — подстройте, если у вас иная схема.
-    """
-    if model_uri is None:
-        model_uri = os.getenv("YAND_CLASSIFY_MODEL_URI", "models/text-classification-??")  # TODO: замените
-    # TextClassification REST path (примерное): https://llm.api.cloud.yandex.net/foundationModels/v1/textClassification/classify
+    uri = model_uri or os.getenv("YAND_CLASSIFY_MODEL_URI", "models/text-classification-??")
     url = f"{BASE_URL}/textClassification/classify"
-    payload: Dict[str, Any] = {"modelUri": model_uri, "text": text}
+    payload: Dict[str, Any] = {"modelUri": uri, "text": text}
     if examples:
         payload["examples"] = examples
-
     try:
         headers = get_headers()
         resp = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -149,7 +179,5 @@ def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Option
             return {"error": True, "status_code": resp.status_code, "text": resp.text}
         return resp.json()
     except Exception as e:
-        logger.error(f"yandex_classify error: {e}")
-        if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
-            return {"error": "Yandex API credentials not configured"}
+        logger.error("yandex_classify error: %s", e)
         return {"error": str(e)}

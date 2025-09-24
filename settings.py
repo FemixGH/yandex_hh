@@ -29,3 +29,10 @@ S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET = "vedroo"
 S3_PREFIX = ""
+
+# --- ML SDK specific config ---
+# Имя и версия модели комплишенов в SDK (переопределяют URI в REST вызовах)
+TEXT_MODEL_NAME = os.getenv("YAND_TEXT_MODEL_NAME", "llama")
+TEXT_MODEL_VERSION = os.getenv("YAND_TEXT_MODEL_VERSION", "latest")
+# API-ключ для ML SDK (рекомендуемый способ аутентификации в примерах SDK)
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
