@@ -134,7 +134,8 @@ yc serverless container allow-unauthenticated-invoke --name yandex >nul 2>nul
 
 
 echo [INFO] Deploying rag...
-set RAG_ENV=RAG_SERVICE_HOST=0.0.0.0,RAG_SERVICE_PORT=8080,VECTORSTORE_DIR=/tmp/vectorstore,FOLDER_ID=%FOLDER_ID%,S3_ENDPOINT=https://storage.yandexcloud.net,S3_BUCKET=%S3_BUCKET%,S3_PREFIX=%S3_PREFIX%,SECRET_ID=%SECRET_ID%
+rem Используем тот же путь, что в образе: /app/vectorstore
+set RAG_ENV=RAG_SERVICE_HOST=0.0.0.0,RAG_SERVICE_PORT=8080,VECTORSTORE_DIR=/app/vectorstore,FOLDER_ID=%FOLDER_ID%,S3_ENDPOINT=https://storage.yandexcloud.net,S3_BUCKET=%S3_BUCKET%,S3_PREFIX=%S3_PREFIX%,SECRET_ID=%SECRET_ID%
 
 yc serverless container revision deploy --container-name rag --image %REGISTRY%/rag:latest --service-account-id %SA_ID% --cores 2 --memory 1024MB --concurrency 8 --execution-timeout 60s --environment !RAG_ENV! || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name rag >nul 2>nul

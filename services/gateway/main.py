@@ -394,6 +394,21 @@ async def telegram_proxy(path: str, request):
 
     return await service_client.call_service("telegram", f"/{path}", method, data, params, headers=fwd_headers or None)
 
+# Алиас корневого вебхука на случай, если Telegram направляет на /webhook
+@app.post("/webhook")
+async def webhook_root_alias(request):
+    """Принимает вебхук на /webhook и проксирует в Telegram сервис на /webhook."""
+    # Пробрасываем тело и секрет, если он есть
+    try:
+        data = await request.json()
+    except:
+        data = None
+    fwd_headers = {}
+    secret = request.headers.get("x-telegram-bot-api-secret-token") or request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if secret:
+        fwd_headers["X-Telegram-Bot-Api-Secret-Token"] = secret
+    return await service_client.call_service("telegram", "/webhook", "POST", data, None, headers=fwd_headers or None)
+
 @app.api_route("/rag/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def rag_proxy(path: str, request):
     """Проксирование запросов к RAG сервису"""

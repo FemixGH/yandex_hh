@@ -14,7 +14,7 @@ dotenv.load_dotenv()
 
 SERVICE_ACCOUNT_ID = os.getenv("SERVICE_ACCOUNT_ID")
 KEY_ID = os.getenv("KEY_ID")
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+PRIVATE_KEY = os.getenv("")
 FOLDER_ID = os.getenv("FOLDER_ID") or os.getenv("YC_FOLDER_ID")
 
 # Model URIs — можно явно указать в .env, иначе соберём из FOLDER_ID

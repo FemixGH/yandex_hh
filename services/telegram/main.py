@@ -71,7 +71,9 @@ class BotResponse(BaseModel):
 class GatewayClient:
     def __init__(self):
         self.client = httpx.AsyncClient()
-        self.gateway_url = GATEWAY_URL
+        # Нормализуем базовый URL, чтобы избежать двойных слэшей при конкатенации
+        base = GATEWAY_URL or ""
+        self.gateway_url = base.rstrip("/")
 
     async def ask_bartender(self, query: str, user_id: str) -> dict:
         """Отправка запроса к барменскому ИИ через Gateway"""
@@ -392,6 +394,13 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: Op
 
     try:
         data = await request.json()
+        # Логируем факт получения апдейта (без чувствительных данных)
+        try:
+            upd_type = data.get("message", {}).get("text") or data.get("callback_query", {}).get("data")
+            logger.info("Получен вебхук от Telegram (сокр.): %s", str(upd_type)[:120])
+        except Exception:
+            logger.info("Получен вебхук от Telegram (без парсинга тела)")
+
         update = Update.de_json(data, bot=telegram_app.bot)
         # Обрабатываем в фоне, чтобы быстро вернуть 200 OK
         asyncio.create_task(telegram_app.process_update(update))
