@@ -47,7 +47,7 @@ def _get_sdk():
     if not FOLDER_ID:
         raise RuntimeError("FOLDER_ID не задан для инициализации Yandex ML SDK")
 
-    logger.info("Инициализация Yandex ML SDK с IAM токеном")
+    logger.info("Инициализация Yandex Cloud ML SDK с IAM токеном")
     _SDK = YCloudML(folder_id=FOLDER_ID, auth=iam_token)
     return _SDK
 
@@ -141,6 +141,7 @@ def yandex_completion(
             model = model.configure(temperature=temperature)
         except Exception:
             pass
+        logger.info("Using SDK completions model: name=%s, version=%s", TEXT_MODEL_NAME, TEXT_MODEL_VERSION)
         result = model.run(messages)
         return _normalize_sdk_alternatives(result)
     except Exception as e:
@@ -161,6 +162,7 @@ def yandex_completion(
                 "messages": messages,
             }
             headers = get_headers()
+            logger.info("Using REST completions modelUri: %s", mu)
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
             if resp.status_code == 200:
                 return resp.json()
