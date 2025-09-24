@@ -283,7 +283,7 @@ async def on_terms_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer("Условия не приняты")
         try:
             await query.edit_message_text(
-                "Вы отказались от условий. Бот не будет предоставлять информацию об алкогольных напитках.\n"
+                "Вы отказались от условий. Бот не будет предоставлять информацию об алкогольных напи��ках.\n"
                 "Если передумаете — отправьте /start."
             )
         except Exception:
@@ -332,18 +332,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response = await gateway_client.ask_bartender(user_text, str(user.id))
 
         if response.get("blocked", False):
-            await message.reply_text(
-                f"❌ {response.get('reason', 'Запрос заблокирован модерацией')}"
-            )
+            blocked_text = f"❌ {response.get('reason', 'Запрос заблокирован модерацией')}"
+            # Лог: что бот отправляет пользователю при блокировке
+            logger.info(f"Бот -> {user.id} ({user.username}): {blocked_text}")
+            await message.reply_text(blocked_text)
             return
 
         answer = response.get("answer", "")
         if not answer:
-            await message.reply_text("🤔 Не смог найти подходящую информацию. Попробуйте переформулировать запрос.")
+            fallback_text = "🤔 Не смог найти подходящую информацию. Попробуйте переформулировать запрос."
+            logger.info(f"Бот -> {user.id} ({user.username}): {fallback_text}")
+            await message.reply_text(fallback_text)
             return
 
         # Форматируем и отправляем ответ
         formatted_answer = format_bartender_response(answer)
+
+        # Лог: основной текст (до разбиения)
+        logger.info(f"Бот -> {user.id} ({user.username}): {formatted_answer[:1000]}{'...' if len(formatted_answer)>1000 else ''}")
 
         # Разбиваем длинные сообщения
         if len(formatted_answer) > 4000:
@@ -364,6 +370,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parts.append(current_part.rstrip())
 
             for i, part in enumerate(parts):
+                # Лог: каждая часть, ограничиваем длину в логах
+                logger.info(f"Бот -> {user.id} ({user.username}) [часть {i+1}/{len(parts)}]: {part[:1000]}{'...' if len(part)>1000 else ''}")
                 await message.reply_text(part, parse_mode='MarkdownV2')
                 await asyncio.sleep(0.5)
         else:

@@ -283,8 +283,11 @@ async def ask_bartender(request: BartenderQuery):
 
             if not moderation_result.get("is_safe", True):
                 processing_time = (datetime.now() - start_time).total_seconds()
+                blocked_msg = "Извините, ваш запрос не прошел модерацию. Пожалуйста, перефразируйте вопрос."
+                # Логируем исходящее сообщение пользователю
+                await safe_log("INFO", f"Бот -> {request.user_id}: {blocked_msg}", user_id=request.user_id)
                 return BartenderResponse(
-                    answer="Извините, ваш запрос не прошел модерацию. Пожалуйста, перефразируйте вопрос.",
+                    answer=blocked_msg,
                     blocked=True,
                     reason=moderation_result.get("reason", "Нарушение правил"),
                     retrieved_count=0,
@@ -313,8 +316,11 @@ async def ask_bartender(request: BartenderQuery):
 
             if not moderation_result.get("is_safe", True):
                 processing_time = (datetime.now() - start_time).total_seconds()
+                blocked_msg = "Извините, сгенерированный ответ не прошел модерацию."
+                # Логируем исходящее сообщение пользователю
+                await safe_log("INFO", f"Бот -> {request.user_id}: {blocked_msg}", user_id=request.user_id)
                 return BartenderResponse(
-                    answer="Извините, сгенерированный ответ не прошел модерацию.",
+                    answer=blocked_msg,
                     blocked=True,
                     reason=moderation_result.get("reason", "Нарушение правил"),
                     retrieved_count=rag_response.get("retrieved_count", 0),
@@ -333,7 +339,10 @@ async def ask_bartender(request: BartenderQuery):
             sources=rag_response.get("sources", [])
         )
 
-        # Безопасное логирование успешного ответа
+        # Безопасное логирование успешного ответа (обрезка до 2000 символов)
+        if answer:
+            out = answer if len(answer) <= 2000 else (answer[:2000] + "...")
+            await safe_log("INFO", f"Бот -> {request.user_id}: {out}", user_id=request.user_id)
         await safe_log("INFO", f"Ответ сформирован за {processing_time:.2f}s для пользователя {request.user_id}", user_id=request.user_id)
         return response
 
