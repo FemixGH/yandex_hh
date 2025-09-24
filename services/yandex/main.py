@@ -18,6 +18,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from yandex_api import yandex_completion, yandex_text_embedding, yandex_batch_embeddings
+from moderation_yandex import extract_text_from_yandex_completion
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -113,18 +114,22 @@ async def generate_completion(request: CompletionRequest):
     try:
         logger.info(f"Генерация текста, длина промпта: {len(request.prompt)}")
 
-        response = yandex_completion(
+        resp_json = yandex_completion(
             prompt=request.prompt,
             model_uri=request.model_uri,
             max_tokens=request.max_tokens,
             temperature=request.temperature
         )
 
-        if not response:
+        if not resp_json:
             raise HTTPException(status_code=500, detail="Не удалось получить ответ от Yandex GPT")
 
+        text = extract_text_from_yandex_completion(resp_json)
+        if not text:
+            raise HTTPException(status_code=502, detail="Пустой ответ модели")
+
         return CompletionResponse(
-            text=response,
+            text=text,
             model_uri=request.model_uri,
             tokens_used=None  # Yandex API не возвращает информацию о токенах
         )
