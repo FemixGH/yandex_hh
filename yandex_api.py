@@ -200,20 +200,22 @@ def _ycml_completion(prompt: Any, model_uri: Optional[str], max_tokens: int, tem
     if not auth:
         raise RuntimeError("No IAM token or API Key available for YCloudML auth")
 
-    sdk = YCloudML(folder_id=FOLDER_ID, auth=auth)
+    # Создаем SDK клиент согласно документации
+    sdk = YCloudML(
+        folder_id=FOLDER_ID,
+        auth=auth
+    )
 
+    # Получаем имя и версию модели
     name, ver = _parse_model_from_uri(model_uri)
-    model = sdk.models.completions(name, model_version=ver)
-    # Настройка параметров генерации
-    cfg = {"temperature": temperature}
-    # Параметр лимита токенов может называться по-разному; SDK обычно использует max_tokens
-    try:
-        model = model.configure(**cfg, max_tokens=max_tokens)
-    except TypeError:
-        # Если max_tokens не поддерживается напрямую — применим только temperature
-        model = model.configure(**cfg)
 
-    # Сбор сообщений
+    # Создаем модель согласно документации
+    model = sdk.models.completions(name, model_version=ver)
+
+    # Настраиваем параметры генерации
+    model = model.configure(temperature=temperature)
+
+    # Подготавливаем сообщения в правильном формате
     if isinstance(prompt, list):
         messages = []
         for msg in prompt:
@@ -226,8 +228,9 @@ def _ycml_completion(prompt: Any, model_uri: Optional[str], max_tokens: int, tem
     else:
         messages = [{"role": "user", "text": str(prompt)}]
 
-    # Запуск
+    # Запуск генерации согласно документации
     result = model.run(messages)
+
     return _to_alternatives_json_from_sdk_result(result)
 
 
@@ -316,3 +319,102 @@ def yandex_classify(text: str, model_uri: Optional[str] = None, examples: Option
         if "API credentials not configured" in str(e) or "SERVICE_ACCOUNT_ID" in str(e):
             return {"error": "Yandex API credentials not configured"}
         return {"error": str(e)}
+
+
+# --- Удобные функции для работы с SDK ---
+
+def yandex_sdk_completion(messages: List[Dict[str, str]], model_name: str = None, model_version: str = "latest", temperature: float = 0.3) -> str:
+    """
+    Простая функция для работы с YandexGPT через SDK в стиле документации.
+
+    Args:
+        messages: Список сообщений в формате [{"role": "system/user/assistant", "text": "..."}]
+        model_name: Имя модели (по умолчанию берется из ENV переменной YAND_TEXT_MODEL_NAME или "llama")
+        model_version: Версия модели (по умолчанию "latest")
+        temperature: Температура генерации (0.0-1.0)
+
+    Returns:
+        str: Сгенерированный текст
+
+    Example:
+        messages = [
+            {"role": "system", "text": "Ты полезный помощник"},
+            {"role": "user", "text": "Привет, как дела?"}
+        ]
+        response = yandex_sdk_completion(messages, temperature=0.5)
+        print(response)
+    """
+    if not _YCML_AVAILABLE:
+        raise RuntimeError("yandex_cloud_ml_sdk is not installed. Run: pip install yandex-cloud-ml-sdk")
+
+    auth = _get_yc_auth_token()
+    if not auth:
+        raise RuntimeError("No IAM token or API Key available. Check YANDEX_API_KEY environment variable")
+
+    # Используем модель из переменных окружения или переданную
+    if model_name is None:
+        model_name = os.getenv("YAND_TEXT_MODEL_NAME", "llama")
+
+    # Создаем SDK клиент
+    sdk = YCloudML(
+        folder_id=FOLDER_ID,
+        auth=auth
+    )
+
+    # Создаем и настраиваем модель
+    model = sdk.models.completions(model_name, model_version=model_version)
+    model = model.configure(temperature=temperature)
+
+    # Запускаем генерацию
+    result = model.run(messages)
+
+    # Извлекаем текст из результата
+    try:
+        for alternative in result:
+            if hasattr(alternative, 'text'):
+                return alternative.text
+            elif hasattr(alternative, 'message') and hasattr(alternative.message, 'text'):
+                return alternative.message.text
+    except Exception as e:
+        logger.error(f"Error extracting text from SDK result: {e}")
+
+    return ""
+
+
+def create_yandex_sdk_model(model_name: str = None, model_version: str = "latest", temperature: float = 0.3):
+    """
+    Создает и возвращает настроенную модель YandexGPT для многократного использования.
+
+    Args:
+        model_name: Имя модели (по умолчанию из ENV или "llama")
+        model_version: Версия модели
+        temperature: Температура генерации
+
+    Returns:
+        Настроенная модель для генерации текста
+
+    Example:
+        model = create_yandex_sdk_model("llama", "latest", 0.3)
+
+        messages = [{"role": "user", "text": "Привет!"}]
+        result = model.run(messages)
+        for alternative in result:
+            print(alternative.text)
+    """
+    if not _YCML_AVAILABLE:
+        raise RuntimeError("yandex_cloud_ml_sdk is not installed. Run: pip install yandex-cloud-ml-sdk")
+
+    auth = _get_yc_auth_token()
+    if not auth:
+        raise RuntimeError("No IAM token or API Key available. Check YANDEX_API_KEY environment variable")
+
+    if model_name is None:
+        model_name = os.getenv("YAND_TEXT_MODEL_NAME", "llama")
+
+    sdk = YCloudML(
+        folder_id=FOLDER_ID,
+        auth=auth
+    )
+
+    model = sdk.models.completions(model_name, model_version=model_version)
+    return model.configure(temperature=temperature)
