@@ -66,30 +66,34 @@ done
 _print_header "3. Gateway: Round-trip Test (/bartender/ask)"
 if [[ -n "${URLS[gateway]:-}" ]]; then
   # Test 1: Мохито рецепт
+  echo "  Testing Мохито recipe..."
   RESP=$(curl -sS -m 20 -X POST -H 'Content-Type: application/json' \
     -d '{"query":"рецепт Мохито","user_id":"full-test-script"}' \
     "${URLS[gateway]}/bartender/ask" || true)
 
   if echo "$RESP" | jq -e '.answer' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'answer' field (Мохито)."
+    _print_status "OK" "Мохито: Response contains 'answer' field."
+    echo "      Answer preview: $(echo "$RESP" | jq -r '.answer' | head -c 100)..."
   elif echo "$RESP" | jq -e '.blocked' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'blocked' field (moderation - Мохито)."
+    _print_status "OK" "Мохито: Response contains 'blocked' field (moderation)."
   else
-    _print_status "FAIL" "Unexpected or invalid JSON response (Мохито)."
+    _print_status "FAIL" "Мохито: Unexpected or invalid JSON response."
     echo "      Response: $RESP"
   fi
 
   # Test 2: Лимонад рецепт
+  echo "  Testing лимонад recipe..."
   LEMONADE_RESP=$(curl -sS -m 20 -X POST -H 'Content-Type: application/json' \
     -d '{"query":"как сделать лимонад","user_id":"full-test-script-lemonade"}' \
     "${URLS[gateway]}/bartender/ask" || true)
 
   if echo "$LEMONADE_RESP" | jq -e '.answer' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'answer' field (лимонад)."
+    _print_status "OK" "Лимонад: Response contains 'answer' field."
+    echo "      Answer preview: $(echo "$LEMONADE_RESP" | jq -r '.answer' | head -c 100)..."
   elif echo "$LEMONADE_RESP" | jq -e '.blocked' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'blocked' field (moderation - лимонад)."
+    _print_status "OK" "Лимонад: Response contains 'blocked' field (moderation)."
   else
-    _print_status "FAIL" "Unexpected or invalid JSON response (лимонад)."
+    _print_status "FAIL" "Лимонад: Unexpected or invalid JSON response."
     echo "      Response: $LEMONADE_RESP"
   fi
 else
