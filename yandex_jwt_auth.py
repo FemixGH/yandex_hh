@@ -73,7 +73,12 @@ def get_iam_token_from_metadata() -> str | None:
 
 
 def get_iam_token():
-    """Получает IAM токен: метаданные -> JWT/PEM (fallback)."""
+    """Получает IAM токен: ENV -> метаданные -> JWT/PEM (fallback)."""
+    # 0) Явная передача токена через окружение (удобно локально)
+    env_token = os.environ.get("IAM_TOKEN")
+    if env_token:
+        return env_token
+
     # 1) Пытаемся получить токен из метаданных (рекомендуемый путь в Serverless/VM)
     token = get_iam_token_from_metadata()
     if token:

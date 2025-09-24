@@ -69,6 +69,7 @@ services:
     volumes:
       - ./vectorstore:/app/vectorstore
       - ./faiss_index_yandex:/app/faiss_index_yandex
+      - ./private-key.pem:/app/private-key.pem:ro
     restart: unless-stopped
     networks:
       - bartender-net
@@ -89,6 +90,8 @@ services:
       - YANDEX_API_KEY=${YANDEX_API_KEY}
       - YAND_EMBEDDING_MODEL_URI=${YAND_EMBEDDING_MODEL_URI}
       - YAND_TEXT_MODEL_URI=${YAND_TEXT_MODEL_URI}
+    volumes:
+      - ./private-key.pem:/app/private-key.pem:ro
     restart: unless-stopped
     networks:
       - bartender-net
@@ -109,6 +112,8 @@ services:
       - YANDEX_API_KEY=${YANDEX_API_KEY}
       - YAND_EMBEDDING_MODEL_URI=${YAND_EMBEDDING_MODEL_URI}
       - YAND_TEXT_MODEL_URI=${YAND_TEXT_MODEL_URI}
+    volumes:
+      - ./private-key.pem:/app/private-key.pem:ro
     restart: unless-stopped
     networks:
       - bartender-net

@@ -1,4 +1,3 @@
-
 import os
 import faiss
 import pickle
@@ -136,21 +135,27 @@ def semantic_search(query: str, k: int = 3, model_uri: Optional[str] = None) -> 
         index, vectors, docs = load_index()
 
         # Получаем эмбеддинг запроса
-        query_embedding = yandex_batch_embeddings([query], model_uri=model_uri)
-        if not query_embedding:
-            logger.error("Не удалось получить эмбеддинг для запроса")
+        emb_list = yandex_batch_embeddings([query], model_uri=model_uri)
+        # Валидируем результат
+        if not emb_list or not isinstance(emb_list, list) or not emb_list[0] or len(emb_list[0]) == 0:
+            logger.error("Не удалось получить эмбеддинг для запроса или он пустой")
             return []
 
-        query_vector = np.array(query_embedding, dtype='float32')
-        faiss.normalize_L2(query_vector)
+        query_vec = np.array([emb_list[0]], dtype='float32')  # форма (1, dim)
+        if query_vec.ndim != 2 or query_vec.shape[1] != vectors.shape[1]:
+            logger.error("Размерность эмбеддинга запроса некорректна: got %s, expected %s", query_vec.shape, vectors.shape)
+            return []
+
+        # Нормализация для косинусного сходства
+        faiss.normalize_L2(query_vec)
 
         # Выполняем поиск
-        scores, indices = index.search(query_vector, k)
+        scores, indices = index.search(query_vec, k)
 
         # Формируем результаты
         results = []
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            if idx < len(docs):
+            if 0 <= idx < len(docs):
                 result = docs[idx].copy()
                 result["score"] = float(score)
                 result["rank"] = i + 1

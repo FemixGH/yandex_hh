@@ -214,16 +214,25 @@ def semantic_search_in_memory(query: str, k: int = 3, embedding_model_uri: Optio
         logger.exception("faiss_adapter.semantic_search failed: %s. Falling back to in-memory dot-product search.", e)
 
     mat, docs = load_vectorstore()
-    q_emb = np.array(yandex_batch_embeddings([query], model_uri=embedding_model_uri), dtype=np.float32)
-    q_norm = np.linalg.norm(q_emb, axis=1, keepdims=True)
-    q_norm[q_norm == 0] = 1.0
+    emb_list = yandex_batch_embeddings([query], model_uri=embedding_model_uri)
+    if not emb_list or not emb_list[0]:
+        logger.error("semantic_search_in_memory: пустой эмбеддинг запроса; возвращаю []")
+        return []
+    q_emb = np.array(emb_list[0], dtype=np.float32)
+    if q_emb.ndim != 1 or q_emb.shape[0] != mat.shape[1]:
+        logger.error("semantic_search_in_memory: неверная размерность эмбеддинга %s, ожидается %s", q_emb.shape, (mat.shape[1],))
+        return []
+    q_norm = np.linalg.norm(q_emb)
+    if q_norm == 0:
+        logger.error("semantic_search_in_memory: нулевая норма эмбеддинга запроса")
+        return []
     q_emb = q_emb / q_norm
-    scores = (mat @ q_emb.T).squeeze()  # shape (n,)
+    scores = mat @ q_emb  # shape (n,)
     idx = np.argsort(-scores)[:k]
     results = []
     for i in idx:
-        d = docs[i].copy()
-        d["score"] = float(scores[i])
+        d = docs[int(i)].copy()
+        d["score"] = float(scores[int(i)])
         results.append(d)
     return results
 
