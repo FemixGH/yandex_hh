@@ -65,17 +65,32 @@ done
 # --- 3. Gateway Functional Test ---
 _print_header "3. Gateway: Round-trip Test (/bartender/ask)"
 if [[ -n "${URLS[gateway]:-}" ]]; then
+  # Test 1: Мохито рецепт
   RESP=$(curl -sS -m 20 -X POST -H 'Content-Type: application/json' \
     -d '{"query":"рецепт Мохито","user_id":"full-test-script"}' \
     "${URLS[gateway]}/bartender/ask" || true)
 
   if echo "$RESP" | jq -e '.answer' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'answer' field."
+    _print_status "OK" "Response contains 'answer' field (Мохито)."
   elif echo "$RESP" | jq -e '.blocked' >/dev/null 2>&1; then
-    _print_status "OK" "Response contains 'blocked' field (moderation)."
+    _print_status "OK" "Response contains 'blocked' field (moderation - Мохито)."
   else
-    _print_status "FAIL" "Unexpected or invalid JSON response."
+    _print_status "FAIL" "Unexpected or invalid JSON response (Мохито)."
     echo "      Response: $RESP"
+  fi
+
+  # Test 2: Лимонад рецепт
+  LEMONADE_RESP=$(curl -sS -m 20 -X POST -H 'Content-Type: application/json' \
+    -d '{"query":"как сделать лимонад","user_id":"full-test-script-lemonade"}' \
+    "${URLS[gateway]}/bartender/ask" || true)
+
+  if echo "$LEMONADE_RESP" | jq -e '.answer' >/dev/null 2>&1; then
+    _print_status "OK" "Response contains 'answer' field (лимонад)."
+  elif echo "$LEMONADE_RESP" | jq -e '.blocked' >/dev/null 2>&1; then
+    _print_status "OK" "Response contains 'blocked' field (moderation - лимонад)."
+  else
+    _print_status "FAIL" "Unexpected or invalid JSON response (лимонад)."
+    echo "      Response: $LEMONADE_RESP"
   fi
 else
   _print_status "FAIL" "Gateway URL not found."
@@ -158,4 +173,3 @@ fi
 
 echo
 echo "====== Test run finished. ======"
-
