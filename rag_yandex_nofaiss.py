@@ -33,6 +33,7 @@ SYSTEM_PROMPT_BARTENDER = (
     "- Нумеруй шаги приготовления\n"
     "- Указывай точные количества в мл, г, ст.л., ч.л.\n"
     "- Добавляй температуру и время, если необходимо\n"
+    "Форматируй ответ в json на японском языке\n"
 )
 
 def download_pdf_bytes(bucket: str, key: str, endpoint: str = S3_ENDPOINT,
