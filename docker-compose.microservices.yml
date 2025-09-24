@@ -40,6 +40,7 @@ services:
       - TELEGRAM_SERVICE_PORT=8001
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
       - GATEWAY_URL=http://gateway:8000
+      - REDIS_URL=redis://redis:6379/0
     restart: unless-stopped
     networks:
       - bartender-net

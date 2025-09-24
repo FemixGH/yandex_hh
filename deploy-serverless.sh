@@ -26,6 +26,8 @@ fi
 
 # Опционально: секрет токена вебхука Telegram
 WEBHOOK_SECRET_TOKEN=${WEBHOOK_SECRET_TOKEN:-}
+# Опционально: URL управляемого Redis (например, rediss://user:pass@host:port/0)
+REDIS_URL=${REDIS_URL:-}
 
 echo "[INFO] Folder: ${FOLDER_ID}  Cloud: ${CLOUD_ID:-unknown}  Secret: ${SECRET_ID}"
 
@@ -203,6 +205,10 @@ TELEGRAM_ENV=(
 # Добавим секрет токена вебхука, если он задан
 if [[ -n "${WEBHOOK_SECRET_TOKEN}" ]]; then
   TELEGRAM_ENV+=("WEBHOOK_SECRET_TOKEN=${WEBHOOK_SECRET_TOKEN}")
+fi
+# Добавим REDIS_URL, если задан для serverless
+if [[ -n "${REDIS_URL}" ]]; then
+  TELEGRAM_ENV+=("REDIS_URL=${REDIS_URL}")
 fi
 TELEGRAM_ENV_JOINED=$(IFS=, ; echo "${TELEGRAM_ENV[*]}")
 

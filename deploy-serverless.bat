@@ -34,6 +34,8 @@ echo [INFO] Folder: %FOLDER_ID%  Cloud: %CLOUD_ID%  Secret: %SECRET_ID%
 
 rem Optional: webhook secret token for Telegram (if set, will be passed to container)
 set WEBHOOK_SECRET_TOKEN=%WEBHOOK_SECRET_TOKEN%
+rem Optional: Managed Redis URL for Telegram (e.g., rediss://user:pass@host:port/0)
+set REDIS_URL=%REDIS_URL%
 
 rem -------- Resolve or create Service Account --------
 set SA_NAME=sc-containers
@@ -168,6 +170,7 @@ rem -------- Deploy telegram --------
 echo [INFO] Deploying telegram...
 set TELEGRAM_ENV=TELEGRAM_SERVICE_HOST=0.0.0.0,TELEGRAM_SERVICE_PORT=8080,GATEWAY_URL=%GATEWAY_URL%,SECRET_ID=%SECRET_ID%,USE_WEBHOOK=true,WEBHOOK_URL=%GATEWAY_URL%/telegram/webhook
 if not "%WEBHOOK_SECRET_TOKEN%"=="" set TELEGRAM_ENV=%TELEGRAM_ENV%,WEBHOOK_SECRET_TOKEN=%WEBHOOK_SECRET_TOKEN%
+if not "%REDIS_URL%"=="" set TELEGRAM_ENV=%TELEGRAM_ENV%,REDIS_URL=%REDIS_URL%
 
 yc serverless container revision deploy --container-name telegram --image %REGISTRY%/telegram:latest --service-account-id %SA_ID% --cores 1 --memory 512MB --concurrency 4 --execution-timeout 300s --environment %TELEGRAM_ENV% || goto :deploy_fail
 yc serverless container allow-unauthenticated-invoke --name telegram >nul 2>nul

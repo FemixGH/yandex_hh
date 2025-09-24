@@ -10,12 +10,18 @@ import asyncio
 from typing import Optional
 
 import httpx
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 from fastapi import FastAPI, HTTPException, Request, Header
 from pydantic import BaseModel, Field
 import uvicorn
+
+# Redis (async)
+try:
+    from redis import asyncio as aioredis  # redis>=4.2
+except Exception:  # fallback имя
+    import redis.asyncio as aioredis  # type: ignore
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +37,7 @@ except Exception:
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8000")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 # Режим работы: polling (локально) или webhook (в облаке). По умолчанию — polling
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() in {"1", "true", "yes"}
@@ -46,6 +53,58 @@ app = FastAPI(
     description="Сервис для обработки сообщений Telegram бота",
     version="1.0.0"
 )
+
+# ========================
+# Redis client (lazy init)
+# ========================
+redis_client: Optional[aioredis.Redis] = None
+
+async def get_redis() -> Optional[aioredis.Redis]:
+    global redis_client
+    if redis_client is None and REDIS_URL:
+        try:
+            redis_client = aioredis.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+            # Быстрый ping для валидации соединения (не валим старт при ошибке)
+            try:
+                await redis_client.ping()
+                logger.info("Redis подключен: %s", REDIS_URL)
+            except Exception as e:
+                logger.warning("Redis недоступен (%s) — используем in-memory fallback", e)
+        except Exception as e:
+            logger.warning("Не удалось инициализировать Redis: %s", e)
+            redis_client = None
+    return redis_client
+
+TERMS_KEY_PREFIX = "tg:terms:accepted:"
+
+async def set_terms_accepted(user_id: int, accepted: bool) -> None:
+    r = await get_redis()
+    key = f"{TERMS_KEY_PREFIX}{user_id}"
+    if r is None:
+        # fallback in-memory
+        user_states[user_id] = {"accepted_terms": accepted}
+        return
+    try:
+        await r.set(key, "1" if accepted else "0")
+        # на всякий случай обновим in-memory
+        user_states[user_id] = {"accepted_terms": accepted}
+    except Exception as e:
+        logger.warning("Redis set failed: %s — fallback to memory", e)
+        user_states[user_id] = {"accepted_terms": accepted}
+
+async def get_terms_accepted(user_id: int) -> bool:
+    # сначала попробуем Redis
+    r = await get_redis()
+    key = f"{TERMS_KEY_PREFIX}{user_id}"
+    if r is not None:
+        try:
+            val = await r.get(key)
+            if val is not None:
+                return val == "1"
+        except Exception as e:
+            logger.warning("Redis get failed: %s — fallback to memory", e)
+    # затем in-memory
+    return bool(user_states.get(user_id, {}).get("accepted_terms", False))
 
 # ========================
 # Pydantic модели
@@ -100,8 +159,25 @@ gateway_client = GatewayClient()
 # Telegram Bot логика
 # ========================
 
-# Состояние пользователей
+# Состояние пользователей (fallback при отсутствии Redis)
 user_states = {}
+
+# ====== Новый блок: текст дисклеймера и клавиатура согласия ======
+DISCLAIMER_TEXT = (
+    "Внимание: бот может предоставлять информацию об алкогольных напитках.\n"
+    "— Контент 18+\n"
+    "— Пейте ответственно и умеренно\n"
+    "— Не нарушайте законы вашей страны\n\n"
+    "Нажимая ‘Принимаю условия’, вы подтверждаете, что вам есть 18 лет и вы согласны с условиями использования."
+)
+
+def get_terms_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(text="Принимаю условия", callback_data="terms_accept"),
+            InlineKeyboardButton(text="Не принимаю", callback_data="terms_reject"),
+        ]
+    ])
 
 def escape_markdown_v2(text: str) -> str:
     """Экранирует специальные символы для MarkdownV2"""
@@ -136,67 +212,82 @@ def format_bartender_response(text: str) -> str:
     return '\n'.join(formatted_lines)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start"""
+    """Обработчик команды /start — показываем дисклеймер и просим подтвердить условия."""
     user = update.effective_user
-    welcome_text = f"""
-Привет, {user.first_name}\\! 🍸
-
-Я *ИИ Бармен* \\- твой персональный помощник в мире коктейлей\\!
-
-*Что я умею:*
-🍹 Подбирать коктейли по ингредиентам
-🥃 Рассказывать о напитках и их истории  
-📖 Давать рецепты классических и авторских коктейлей
-🎯 Советовать напитки под настроение
-
-*Примеры запросов:*
-• "Коктейль с водкой и лаймом"
-• "Что можно сделать из виски?"
-• "Рецепт Мохито"
-• "Коктейль для романтического вечера"
-
-Просто напиши мне, что тебя интересует\\! 🚀
-"""
-
-    keyboard = [
-        ["🍸 Популярные коктейли", "🥃 По ингредиентам"],
-        ["📚 Классика", "🎲 Случайный коктейль"],
-        ["ℹ️ Помощь"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
+    # Сбрасываем согласие в Redis (необязательно, но полезно):
+    await set_terms_accepted(user.id, False)
 
     await update.message.reply_text(
-        welcome_text,
-        parse_mode='MarkdownV2',
-        reply_markup=reply_markup
+        DISCLAIMER_TEXT,
+        reply_markup=get_terms_keyboard()
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
-    help_text = """
-*Как пользоваться ботом:*
-
-🔸 *Просто напишите запрос* \\- я найду подходящие коктейли
-🔸 *Укажите ингредиенты* \\- получите рецепты с ними
-🔸 *Спросите про конкретный коктейль* \\- узнаете рецепт и историю
-
-*Примеры:*
-• "Коктейли с джином"
-• "Рецепт Маргариты"  
-• "Что приготовить на вечеринку?"
-• "Безалкогольные коктейли"
-
-*Используйте кнопки* для быстрого доступа к популярным категориям\\!
-"""
-
+    help_text = (
+        "*Как пользоваться ботом:*\n\n"
+        "🔸 *Сначала примите условия использования* командой /start\n"
+        "🔸 *Потом просто напишите запрос* — я найду подходящие коктейли\n"
+        "🔸 *Укажите ингредиенты* — получите рецепты с ними\n"
+        "🔸 *Спросите про конкретный коктейль* — узнаете рецепт и историю\n\n"
+        "*Примеры:*\n• \"Коктейли с джином\"\n• \"Рецепт Маргариты\"  \n• \"Что приготовить на вечеринку?\"\n• \"Безалкогольные коктейли\"\n"
+    )
     await update.message.reply_text(help_text, parse_mode='MarkdownV2')
+
+# Новый обработчик inline-кнопок согласия с условиями
+async def on_terms_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user = query.from_user
+    data = query.data or ""
+
+    if data == "terms_accept":
+        await set_terms_accepted(user.id, True)
+        await query.answer("Условия приняты")
+        # Покажем основную клавиатуру категорий и приветствие
+        keyboard = [
+            ["🍸 Популярные коктейли", "🥃 По ингредиентам"],
+            ["📚 Классика", "🎲 Случайный коктейль"],
+            ["ℹ️ Помощь"],
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=False, resize_keyboard=True)
+        welcome_text = (
+            "Привет! Я ИИ Бармен — помогу с рецептами и идеями напитков.\n"
+            "Напишите, что вас интересует, или выберите кнопку ниже."
+        )
+        try:
+            await query.edit_message_text("Спасибо! Условия приняты.")
+        except Exception:
+            pass
+        await context.bot.send_message(chat_id=query.message.chat_id, text=welcome_text, reply_markup=reply_markup)
+
+    elif data == "terms_reject":
+        await set_terms_accepted(user.id, False)
+        await query.answer("Условия не приняты")
+        try:
+            await query.edit_message_text(
+                "Вы отказались от условий. Бот не будет предоставлять информацию об алкогольных напитках.\n"
+                "Если передумаете — отправьте /start."
+            )
+        except Exception:
+            pass
+    else:
+        await query.answer()
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик текстовых сообщений"""
     user = update.effective_user
     message = update.message
-    user_text = message.text
 
+    # Требуем принятия условий перед использованием (читаем из Redis)
+    accepted = await get_terms_accepted(user.id)
+    if not accepted:
+        await message.reply_text(
+            "Пожалуйста, сначала примите условия использования: /start",
+            reply_markup=get_terms_keyboard()
+        )
+        return
+
+    user_text = message.text
     logger.info(f"Получено сообщение от {user.id} ({user.username}): {user_text}")
 
     # Обработка кнопок
@@ -255,20 +346,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 parts.append(current_part.rstrip())
 
             for i, part in enumerate(parts):
-                if i == 0:
-                    await message.reply_text(part, parse_mode='MarkdownV2')
-                else:
-                    await message.reply_text(part, parse_mode='MarkdownV2')
-
-                # Небольшая пауза между частями
+                await message.reply_text(part, parse_mode='MarkdownV2')
                 await asyncio.sleep(0.5)
         else:
             await message.reply_text(formatted_answer, parse_mode='MarkdownV2')
-
-        # Добавляем информацию о времени обработки (опционально)
-        processing_time = response.get("processing_time", 0)
-        if processing_time > 5:  # Показываем только если обработка была долгой
-            await message.reply_text(f"⏱ Время обработки: {processing_time:.1f}с")
 
     except Exception as e:
         logger.error(f"Ошибка при обработке сообщения: {e}")
@@ -291,6 +372,7 @@ async def setup_bot():
     # Добавляем обработчики
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("help", help_command))
+    telegram_app.add_handler(CallbackQueryHandler(on_terms_decision, pattern=r"^terms_(accept|reject)$"))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Инициализация
@@ -423,6 +505,8 @@ async def telegram_webhook_alias(request: Request, x_telegram_bot_api_secret_tok
 async def startup_event():
     """События при запуске"""
     logger.info("Запуск Telegram Bot Service")
+    # Инициализируем Redis заранее (не критично, но полезно)
+    await get_redis()
     await setup_bot()
 
 @app.on_event("shutdown")
