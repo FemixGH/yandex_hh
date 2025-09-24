@@ -9,6 +9,7 @@ COPY settings.py .
 COPY logging_conf.py .
 COPY yandex_api.py .
 COPY yandex_jwt_auth.py .
+COPY ../../moderation_yandex.py .
 
 # Копируем файлы Yandex сервиса
 COPY services/yandex/ ./services/yandex/
