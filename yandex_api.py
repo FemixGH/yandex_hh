@@ -11,7 +11,6 @@ from settings import (
     TEXT_MODEL_NAME,
     TEXT_MODEL_VERSION,
     TEXT_MODEL_URI,
-    YANDEX_API_KEY,
 )
 from yandex_jwt_auth import BASE_URL, get_headers, get_iam_token
 
@@ -31,18 +30,25 @@ def _get_sdk():
         logger.error("Yandex Cloud ML SDK не установлен: %s", e)
         raise
 
-    # Предпочитаем API-ключ; если нет — используем IAM-токен
-    if YANDEX_API_KEY:
-        auth_token = YANDEX_API_KEY
-        logger.info("Инициализация Yandex ML SDK с API-ключом")
-    else:
-        auth_token = get_iam_token()
-        logger.info("Инициализация Yandex ML SDK с IAM токеном")
+    # Для SDK используем только IAM-токен (gRPC не принимает Api-Key)
+    iam_token = None
+    try:
+        iam_token = get_iam_token()
+    except Exception as e:
+        logger.warning("Не удалось получить IAM токен для SDK: %s", e)
+
+    if not iam_token:
+        # Не пытаемся инициализировать SDK с Api-Key, чтобы избежать UNAUTHENTICATED
+        logger.warning(
+            "IAM токен недоступен — пропускаем SDK и используем REST через get_headers()"
+        )
+        raise RuntimeError("IAM token required for Yandex ML SDK")
 
     if not FOLDER_ID:
         raise RuntimeError("FOLDER_ID не задан для инициализации Yandex ML SDK")
 
-    _SDK = YCloudML(folder_id=FOLDER_ID, auth=auth_token)
+    logger.info("Инициализация Yandex ML SDK с IAM токеном")
+    _SDK = YCloudML(folder_id=FOLDER_ID, auth=iam_token)
     return _SDK
 
 
