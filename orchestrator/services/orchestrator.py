@@ -47,8 +47,8 @@ def _http_query(user_id: int, text: str) -> Dict:
         logger.exception("Orchestrator HTTP call failed")
         return {"ok": False, "reason": "orch_http_error", "meta": {"error": str(e)}}
 
-def query(user_id: int, text: str) -> Dict:
+def query(user_id: int, text: str, k: int = 3) -> Dict:
     if MODE == "http":
-        return _http_query(user_id, text)
+        return _http_query(user_id, text, k)
     else:
         return _local_query(user_id, text)

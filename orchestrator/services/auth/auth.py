@@ -11,8 +11,9 @@ SERVICE_ACCOUNT_ID = os.getenv("SERVICE_ACCOUNT_ID")
 KEY_ID = os.getenv("KEY_ID") 
 FOLDER_ID = os.getenv("FOLDER_ID")
 VECTORSTORE_DIR = os.getenv("VECTORSTORE_DIR", "/app/vectorstore")
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-
+PRIVATE_KEY_PATH = os.getenv("PRIVATE_KEY_PATH", "/app/secrets/private_key.pem")
+with open(PRIVATE_KEY_PATH, "r", encoding="utf-8") as f:
+    PRIVATE_KEY = f.read()
 
 # Базовый URL Yandex — можно переопределить в окружении
 BASE_URL = os.getenv("YANDEX_BASE_URL", "https://llm.api.cloud.yandex.net/foundationModels/v1")

@@ -8,8 +8,8 @@ from typing import List, Optional, Dict, Any
 from services.auth.auth import get_headers, BASE_URL
 logger = logging.getLogger(__name__)
 
-EMB_MODEL_URI = os.getenv("EMB_MODEL_URI", "your_emb_model_uri")
-TEXT_MODEL_URI = os.getenv("TEXT_MODEL_URI", "your_text_model_uri")
+EMB_MODEL_URI = os.getenv("YAND_EMBEDDING_MODEL_URI")
+TEXT_MODEL_URI = os.getenv("YAND_TEXT_MODEL_URI")
 
 def yandex_text_embedding(text: str, model_uri: Optional[str] = None, max_retries: int = 3, delay: float = 1.0) -> List[float]:
     """
@@ -92,7 +92,9 @@ def yandex_completion(messages: List[dict], model_uri: Optional[str] = None, tem
     HEADERS = get_headers()
     if model_uri is None:
         model_uri = TEXT_MODEL_URI
-    print(model_uri + "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    logger.info(">>> Yandex completion request: BASE_URL=%s model_uri=%s", BASE_URL, model_uri)
+    logger.info(">>> HEADERS=%s", {k: HEADERS.get(k) for k in ("Authorization","X-Folder-Id")})
+    logger.info(">>> payload preview: %s", {"modelUri": model_uri, "messages": messages[:1]})
     url = f"{BASE_URL}/completion"
     payload = {
         "modelUri": model_uri,
