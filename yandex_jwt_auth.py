@@ -96,7 +96,19 @@ def get_iam_token():
 
 
 def get_headers():
-    """Заголовки для Yandex API с ленивым получением IAM токена"""
+    """Заголовки для Yandex API: сначала API Key, затем IAM токен."""
+    # 0) Предпочтительно: явный API-ключ (проще для Serverless)
+    api_key = os.environ.get("YANDEX_API_KEY")
+    if api_key:
+        headers = {
+            "Authorization": f"Api-Key {api_key}",
+            "Content-Type": "application/json",
+        }
+        if FOLDER_ID:
+            headers["X-Folder-Id"] = FOLDER_ID
+        return headers
+
+    # 1) Иначе — пытаемся взять IAM токен
     try:
         iam_token = get_iam_token()
         headers = {
