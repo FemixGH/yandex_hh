@@ -175,5 +175,45 @@ else
     _print_status "FAIL" "Logging service URL not found."
 fi
 
+# --- 8. Telegram Webhook Status ---
+_print_header "8. Telegram: Webhook Status"
+if [[ -n "${URLS[telegram]:-}" ]]; then
+  INFO=$(curl -sS -m 10 "${URLS[telegram]}/webhook/info" || true)
+  if echo "$INFO" | jq -e '.telegram.url // empty | type == "string"' >/dev/null 2>&1; then
+    USE_WH=$(echo "$INFO" | jq -r '.use_webhook')
+    CFG_URL=$(echo "$INFO" | jq -r '.configured_webhook_url // empty')
+    TG_URL=$(echo "$INFO" | jq -r '.telegram.url // empty')
+    PENDING=$(echo "$INFO" | jq -r '.telegram.pending_update_count // 0')
+
+    echo "  use_webhook            : $USE_WH"
+    echo "  configured_webhook_url : ${CFG_URL:-"(not set)"}"
+    echo "  telegram.url           : ${TG_URL:-"(empty)"}"
+    echo "  pending_update_count   : $PENDING"
+
+    EXPECTED_URL="${URLS[gateway]}/telegram/webhook"
+    if [[ "$USE_WH" == "true" ]]; then
+      if [[ -z "$TG_URL" || "$TG_URL" != "$EXPECTED_URL" || -z "$CFG_URL" || "$CFG_URL" != "$EXPECTED_URL" ]]; then
+        echo "  Detected mismatch or empty webhook URL. Trying to sync to: $EXPECTED_URL"
+        SYNC_RESP=$(curl -sS -m 15 -X POST "${URLS[telegram]}/webhook/sync" || true)
+        if echo "$SYNC_RESP" | jq -e '.success == true' >/dev/null 2>&1; then
+          _print_status "OK" "Webhook re-synced successfully."
+        else
+          _print_status "FAIL" "Failed to sync webhook."
+          echo "      Response: $SYNC_RESP"
+        fi
+      else
+        _print_status "OK" "Webhook is set correctly."
+      fi
+    else
+      echo "  Webhook mode is disabled (polling)."
+    fi
+  else
+    _print_status "FAIL" "Failed to get webhook info."
+    echo "      Response: $INFO"
+  fi
+else
+  _print_status "FAIL" "Telegram URL not found."
+fi
+
 echo
 echo "====== Test run finished. ======"

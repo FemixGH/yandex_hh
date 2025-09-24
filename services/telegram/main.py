@@ -439,6 +439,50 @@ async def health_check():
         "mode": "webhook" if USE_WEBHOOK and WEBHOOK_URL else "polling"
     }
 
+@app.get("/webhook/info")
+async def webhook_info():
+    """Диагностика текущего состояния вебхука на стороне Telegram."""
+    global telegram_app
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Бот не запущен")
+    try:
+        info = await telegram_app.bot.get_webhook_info()
+        return {
+            "use_webhook": USE_WEBHOOK,
+            "configured_webhook_url": WEBHOOK_URL,
+            "secret_set": bool(WEBHOOK_SECRET_TOKEN),
+            "telegram": {
+                "url": info.url,
+                "has_custom_certificate": info.has_custom_certificate,
+                "pending_update_count": info.pending_update_count,
+                "ip_address": info.ip_address,
+                "last_error_date": info.last_error_date,
+                "last_error_message": info.last_error_message,
+                "max_connections": info.max_connections,
+                "allowed_updates": info.allowed_updates,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения webhook info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/webhook/sync")
+async def webhook_sync():
+    """Переустанавливает вебхук на текущий WEBHOOK_URL/секрет. Полезно, если бот молчит."""
+    global telegram_app
+    if not telegram_app:
+        raise HTTPException(status_code=503, detail="Бот не запущен")
+    if not (USE_WEBHOOK and WEBHOOK_URL):
+        raise HTTPException(status_code=400, detail="Webhook режим не активирован")
+    try:
+        await telegram_app.bot.set_webhook(url=WEBHOOK_URL, secret_token=WEBHOOK_SECRET_TOKEN)
+        info = await telegram_app.bot.get_webhook_info()
+        logger.info("Webhook переустановлен: %s", WEBHOOK_URL)
+        return {"success": True, "url": WEBHOOK_URL, "telegram_url": info.url}
+    except Exception as e:
+        logger.error(f"Ошибка установки вебхука: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/send_message")
 async def send_message(chat_id: int, text: str, parse_mode: str = None):
     """Отправка сообщения в чат"""
