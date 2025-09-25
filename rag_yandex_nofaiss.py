@@ -401,6 +401,73 @@ def audit_log(entry: dict):
 
 
 # --- RAG pipeline: answer_user_query (sync) + async wrapper ---
+def _normalize_bartender_format(text: str, max_len: Optional[int] = None) -> str:
+    """Приводит ответ к аккуратному, читабельному виду.
+    - убирает лишние пробелы в концах строк
+    - схлопывает >2 пустых строк до 1
+    - гарантирует пустую строку перед разделами и между блоками
+    - нормализует маркеры списков ("- ")
+    - при необходимости обрезает до max_len символов
+    """
+    if not text:
+        return ""
+
+    # Нормализуем переносы и хвостовые пробелы
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in text.split("\n")]
+
+    # Удаляем leading/trailing пустые строки
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    # Схлопываем подряд идущие пустые строки до одной
+    normalized: List[str] = []
+    empty_streak = 0
+    for ln in lines:
+        if not ln.strip():
+            empty_streak += 1
+            if empty_streak > 1:
+                continue
+            normalized.append("")
+        else:
+            empty_streak = 0
+            # Нормализуем маркеры списка: заменяем длинные тире/точки на "- "
+            ln_stripped = ln.lstrip()
+            if ln_stripped.startswith(("— ", "– ", "• ", "* ")):
+                ln = "- " + ln_stripped[2:]
+            # Если строка начинается с одинарного дефиса без пробела — добавим пробел
+            if ln_stripped.startswith("-") and not ln_stripped.startswith("- "):
+                ln = "- " + ln_stripped[1:]
+            normalized.append(ln)
+
+    # Вставляем пустую строку перед явными заголовками/эмодзи-блоками, если её нет
+    result: List[str] = []
+    prev_blank = True
+    for ln in normalized:
+        is_heading = False
+        s = ln.strip()
+        if s and (
+            s.startswith(("🍸", "🥃", "👨", "💡", "🎭")) or
+            s.endswith(":") and len(s) < 80 or
+            s.isupper() and len(s) < 60
+        ):
+            is_heading = True
+        if is_heading and not prev_blank and result:
+            # отделяем заголовки пустой строкой
+            result.append("")
+            prev_blank = True
+        result.append(ln)
+        prev_blank = (not ln.strip())
+
+    out = "\n".join(result)
+    out = out.strip()
+    if max_len and len(out) > max_len:
+        out = out[:max_len].rstrip() + "..."
+    return out
+
+
 def generate_mood_based_cocktail(query: str, context: str = "", max_tokens: int = 400, temp: float = 0.3) -> str:
     """
     Генерирует коктейль на основе настроения пользователя.
@@ -480,12 +547,8 @@ def generate_mood_based_cocktail(query: str, context: str = "", max_tokens: int 
         logger.warning("generate_mood_based_cocktail: empty response")
         return ""
 
-    # Очистка и форматирование
-    text = "\n".join([ln.rstrip() for ln in text.splitlines() if ln.strip()])
-    if len(text) > 1200:
-        text = text[:1200] + "..."
-
-    return text
+    # Единая пост-обработка форматирования
+    return _normalize_bartender_format(text, max_len=1200)
 
 
 def generate_mood_based_cocktail_with_history(query: str, context: str = "", context_messages: List[Dict[str, str]] = None, max_tokens: int = 400, temp: float = 0.3) -> str:
@@ -571,12 +634,7 @@ def generate_mood_based_cocktail_with_history(query: str, context: str = "", con
         logger.warning("generate_mood_based_cocktail_with_history: empty response")
         return ""
 
-    # Очистка и форматирование
-    text = "\n".join([ln.rstrip() for ln in text.splitlines() if ln.strip()])
-    if len(text) > 1200:
-        text = text[:1200] + "..."
-
-    return text
+    return _normalize_bartender_format(text, max_len=1200)
 
 
 def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
@@ -685,7 +743,9 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
             yresp = yandex_completion(messages)
             answer = "Извините, сейчас модель недоступна."
             if not yresp.get("error"):
-                answer = extract_text_from_yandex_completion(yresp)
+                raw = extract_text_from_yandex_completion(yresp)
+                if raw:
+                    answer = _normalize_bartender_format(raw)
                 if not answer:
                     answer = generate_compact_cocktail_with_history(user_text, context_messages)
                 if not answer:
@@ -700,7 +760,9 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
                             {"role": "user", "text": user_text}]
                 yresp = yandex_completion(messages)
                 if not yresp.get("error"):
-                    answer = extract_text_from_yandex_completion(yresp)
+                    raw = extract_text_from_yandex_completion(yresp)
+                    if raw:
+                        answer = _normalize_bartender_format(raw)
             if not answer:
                 answer = "Извините, не удалось сформировать ответ."
 
@@ -730,63 +792,56 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
     return (answer, {"blocked": False, **meta})
 
 
-def generate_compact_cocktail(query: str, max_tokens: int = 220, temp: float = 0.2) -> str:
+def generate_compact_cocktail(query: str, max_tokens: int = 700, temp: float = 0.25) -> str:
     """
-    Возвращает короткий рецепт в строго заданном формате.
-    query: строка с предпочтениями пользователя (напр. "сладкое, безалкогольное")
+    Возвращает подробный, красиво оформленный рецепт в стиле SYSTEM_PROMPT_BARTENDER.
+    Ранее была "короткая" версия — теперь выдаём развёрнутый ответ с разделами.
     """
     SYSTEM_PROMPT_PERSONA = (
-            SYSTEM_PROMPT_BARTENDER +
-            "\n\nОграничение: не более 700 символов. Отвечай строго в формате ниже (без лишних вводных):\n\n"
-            "Коктейль: \"НАЗВАНИЕ\"\n"
-            "ИНГРЕДИЕНТЫ:\n"
-            "  - ...\n"
-            "  - ...\n"
-            "ПРИГОТОВЛЕНИЕ:\n"
-            "  - шаг 1\n"
-            "  - шаг 2\n"
-            "ИНТЕРЕСНЫЙ ФАКТ: Одно-два коротких предложения.\n"
-            "Ни строчек лишних — только этот шаблон. Если нужно, предложи замену ингредиента в скобках."
+        SYSTEM_PROMPT_BARTENDER
     )
-    user = f"Пользователь: {query}. Ответь коротко, максимум 4 ингредиента, максимум 4 шага."
-    resp = yandex_completion([{"role": "system", "text": SYSTEM_PROMPT_PERSONA}, {"role": "user", "text": user}],
-                             temperature=temp, max_tokens=max_tokens)
+    user = (
+        "Составь подробный рецепт коктейля по запросу пользователя. "
+        "Соблюдай форматирование из системного промпта (заголовки, списки, нумерация, количества). "
+        "Если уместно — предложи варианты замен ингредиентов и советы по подаче.\n\n"
+        f"Запрос пользователя: {query}"
+    )
+    resp = yandex_completion([
+        {"role": "system", "text": SYSTEM_PROMPT_PERSONA},
+        {"role": "user", "text": user}
+    ], temperature=temp, max_tokens=max_tokens)
     if resp.get("error"):
         logger.error("generate_compact_cocktail: completion error %s", resp)
         return "Извините, не удалось сформировать рецепт."
     text = extract_text_from_yandex_completion(resp)
     if not text:
         return "Извините, не удалось сформировать рецепт."
-    return text
+    return _normalize_bartender_format(text)
 
 
-def generate_compact_cocktail_with_history(query: str, context_messages: List[Dict[str, str]] = None, max_tokens: int = 220, temp: float = 0.2) -> str:
+def generate_compact_cocktail_with_history(query: str, context_messages: List[Dict[str, str]] = None, max_tokens: int = 700, temp: float = 0.25) -> str:
     """
-    Возвращает короткий рецепт в строго заданном формате с учетом истории сообщений.
+    Возвращает подробный, красиво оформленный рецепт, учитывая историю сообщений.
+    Формат — как у SYSTEM_PROMPT_BARTENDER.
     """
     if context_messages is None:
         context_messages = []
 
     SYSTEM_PROMPT_PERSONA = (
-            SYSTEM_PROMPT_BARTENDER +
-            "\n\nУчитывай контекст предыдущих сообщений для более персонализированных рекомендаций.\n"
-            "\nОграничение: не более 700 символов. Отвечай строго в формате ниже (без лишних вводных):\n\n"
-            "Коктейль: \"НАЗВАНИЕ\"\n"
-            "ИНГРЕДИЕНТЫ:\n"
-            "  - ...\n"
-            "  - ...\n"
-            "ПРИГОТОВЛЕНИЕ:\n"
-            "  - шаг 1\n"
-            "  - шаг 2\n"
-            "ИНТЕРЕСНЫЙ ФАКТ: Одно-два коротких предложения.\n"
-            "Ни строчек лишних — только этот шаблон. Если нужно, предложи замену ингредиента в скобках."
+        SYSTEM_PROMPT_BARTENDER +
+        "\n\nУчитывай контекст предыдущих сообщений для персонализации рекомендаций."
     )
 
     # Формируем полный список сообщений
     messages = [{"role": "system", "text": SYSTEM_PROMPT_PERSONA}]
     messages.extend(context_messages)  # История предыдущих сообщений
 
-    user_prompt = f"Пользователь: {query}. Ответь коротко, максимум 4 ингредиента, максимум 4 шага."
+    user_prompt = (
+        "Составь подробный рецепт коктейля по запросу пользователя. "
+        "Соблюдай форматирование из системного промпта (заголовки, списки, нумерация, количества). "
+        "Если уместно — предложи варианты замен ингредиентов и советы по подаче.\n\n"
+        f"Запрос пользователя: {query}"
+    )
     messages.append({"role": "user", "text": user_prompt})
 
     resp = yandex_completion(messages, temperature=temp, max_tokens=max_tokens)
@@ -796,7 +851,7 @@ def generate_compact_cocktail_with_history(query: str, context_messages: List[Di
     text = extract_text_from_yandex_completion(resp)
     if not text:
         return "Извините, не удалось сформировать рецепт."
-    return text
+    return _normalize_bartender_format(text)
 
 
 async def async_answer_user_query(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
