@@ -17,6 +17,7 @@ from settings import VECTORSTORE_DIR, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY
 # --- new imports for rate limiting ---
 from collections import deque
 import threading
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -441,6 +442,97 @@ def generate_mood_based_cocktail(query: str, context: str = "", max_tokens: int 
     return text
 
 
+def generate_mood_based_cocktail_with_history(query: str, context: str = "", context_messages: List[Dict[str, str]] = None, max_tokens: int = 400, temp: float = 0.3) -> str:
+    """
+    Генерирует коктейль на основе настроения пользователя с учетом истории сообщений.
+    """
+    if context_messages is None:
+        context_messages = []
+
+    # Определяем настроение из запроса
+    mood_mapping = {
+        "веселое": "яркий, энергичный, праздничный",
+        "спокойное": "мягкий, успокаивающий, расслабляющий",
+        "энергичное": "бодрящий, освежающий, тонизирующий",
+        "романтичное": "изысканный, элегантный, чувственный",
+        "уверенное": "классический, стильный, выдержанный",
+        "расслабленное": "легкий, освежающий, ненавязчивый"
+    }
+
+    mood_description = "освежающий и приятный"
+    for mood, description in mood_mapping.items():
+        if mood in query.lower():
+            mood_description = description
+            break
+
+    # Проверяем на эмодзи
+    emoji_mapping = {
+        "😊": "яркий, радостный, праздничный",
+        "😌": "мягкий, успокаивающий, гармоничный",
+        "🔥": "острый, энергичный, согревающий",
+        "💭": "нежный, романтичный, изысканный",
+        "😎": "стильный, классический, уверенный",
+        "🌊": "освежающий, легкий, морской"
+    }
+
+    for emoji, description in emoji_mapping.items():
+        if emoji in query:
+            mood_description = description
+            break
+
+    context_part = f"\nДоступная информация:\n{context}\n" if context.strip() else ""
+
+    # Используем общий системный промпт + специфическое форматирование для mood-генерации
+    SYSTEM_PROMPT = (
+            SYSTEM_PROMPT_BARTENDER +
+            "\n\nУчитывай контекст предыдущих сообщений для более персонализированных рекомендаций.\n"
+            "\nФормат ответа (для напитка по настроению):\n"
+            "🍸 НАЗВАНИЕ НАПИТКА\n\n"
+            "🎭 Почему этот напиток идеален для вашего настроения:\n"
+            "[1-2 предложения о том, как напиток соответствует настроению]\n\n"
+            "🥃 ИНГРЕДИЕНТЫ:\n"
+            "- ингредиент 1 (количество)\n"
+            "- ингредиент 2 (количество)\n"
+            "- и т.д.\n\n"
+            "👨‍🍳 ПРИГОТОВЛЕНИЕ:\n"
+            "1. Шаг 1\n"
+            "2. Шаг 2\n"
+            "3. Шаг 3\n\n"
+            "💡 СОВЕТ БАРМЕНА:\n"
+            "[Интересный факт или дополнительный совет]"
+    )
+
+    # Формируем полный список сообщений
+    messages = [{"role": "system", "text": SYSTEM_PROMPT}]
+    messages.extend(context_messages)  # История предыдущих сообщений
+
+    user_prompt = (
+        f"Пользователь хочет {mood_description} напиток. "
+        f"Его запрос: \"{query}\"\n"
+        f"{context_part}"
+        f"Подбери идеальный напиток под это настроение и создай подробный рецепт."
+    )
+    messages.append({"role": "user", "text": user_prompt})
+
+    resp = yandex_completion(messages, temperature=temp, max_tokens=max_tokens)
+
+    if resp.get("error"):
+        logger.error("generate_mood_based_cocktail_with_history: completion error %s", resp)
+        return ""
+
+    text = extract_text_from_yandex_completion(resp)
+    if not text:
+        logger.warning("generate_mood_based_cocktail_with_history: empty response")
+        return ""
+
+    # Очистка и форматирование
+    text = "\n".join([ln.rstrip() for ln in text.splitlines() if ln.strip()])
+    if len(text) > 1200:
+        text = text[:1200] + "..."
+
+    return text
+
+
 def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
     meta: Dict[str, Any] = {"user_id": user_id, "query": user_text}
 
@@ -488,6 +580,15 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
 
     meta["retrieved_count"] = len(docs)
 
+    # 2.1) Получаем историю сообщений пользователя для контекста
+    try:
+        context_messages = MESSAGE_HISTORY.get_context_messages(user_id)
+        meta["history_messages_count"] = len(context_messages) // 2  # делим на 2, так как пары user-assistant
+    except Exception as e:
+        logger.exception("Failed to get message history: %s", e)
+        context_messages = []
+        meta["history_messages_count"] = 0
+
     # Определяем, является ли запрос о настроении/эмоциях
     mood_keywords = ["настроение", "веселое", "спокойное", "энергичное", "романтичное",
                      "уверенное", "расслабленное", "грустн", "радост", "злост",
@@ -507,28 +608,38 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
         context_parts.append(f"Источник: {src}\n{txt}")
     context_for_model = "\n\n---\n\n".join(context_parts) if context_parts else ""
 
-    # 3) call Yandex completion
+    # 3) call Yandex completion с учетом истории сообщений
     if is_mood_query or not has_good_context:
         # Для запросов по настроению или при недостатке контекста используем специальную генерацию
         logger.info("Используем генерацию коктейля для запроса: %s (mood_query=%s, good_context=%s)",
                     user_text[:50], is_mood_query, has_good_context)
-        answer = generate_mood_based_cocktail(user_text, context_for_model)
+        answer = generate_mood_based_cocktail_with_history(user_text, context_for_model, context_messages)
         if not answer:
-            answer = generate_compact_cocktail(user_text)
+            answer = generate_compact_cocktail_with_history(user_text, context_messages)
         if not answer:
             answer = "Извините, не удалось сформировать ответ."
     else:
-        # Стандартная обработка с контекстом
-        system_prompt = SYSTEM_PROMPT_BARTENDER
-        user_prompt = f"Контекст документов:\n{context_for_model}\n\nВопрос пользователя: {user_text}\nОтветь как профессиональный бармен: рекомендации, рецепты, советы."
-        yresp = yandex_completion([{"role": "system", "text": system_prompt}, {"role": "user", "text": user_prompt}])
+        # Стандартная обработка с контекстом и историей
+        # Формируем полный список сообщений для модели
+        messages = []
+        messages.append({"role": "system", "text": SYSTEM_PROMPT_BARTENDER})
+
+        # Добавляем историю предыдущих сообщений
+        messages.extend(context_messages)
+
+        # Добавляем контекст документов и текущий запрос
+        context_part = f"\n\nКонтекст документов:\n{context_for_model}\n\n" if context_for_model else "\n\n"
+        current_prompt = f"{context_part}Вопрос пользователя: {user_text}\nОтветь как профессиональный бармен: рекомендации, рецепты, советы."
+        messages.append({"role": "user", "text": current_prompt})
+
+        yresp = yandex_completion(messages)
         answer = "Извините, сейчас модель недоступна."
         if not yresp.get("error"):
             # Извлекаем текст из ответа Yandex API
             answer = extract_text_from_yandex_completion(yresp)
             if not answer:
                 # Если не удалось извлечь ответ, используем генератор коктейлей
-                answer = generate_compact_cocktail(user_text)
+                answer = generate_compact_cocktail_with_history(user_text, context_messages)
             if not answer:
                 answer = "Извините, не удалось сформировать ответ."
 
@@ -543,7 +654,16 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
                    "meta": post_meta})
         return ("Извините, я не могу предоставить этот ответ по соображениям безопасности.",
                 {"blocked": True, "reason": post_meta})
-    # 5) success
+
+    # 5) Сохраняем сообщение в историю перед возвратом
+    try:
+        MESSAGE_HISTORY.add_message(user_id, user_text, answer)
+        logger.debug("Added message to history for user %s", user_id)
+    except Exception as e:
+        logger.exception("Failed to save message to history: %s", e)
+        # Не блокируем выполнение, если не удалось сохранить историю
+
+    # 6) success
     audit_log({"user_id": user_id, "action": "answered", "query": user_text, "retrieved": [d.get("id") for d in docs],
                "meta": meta})
     return (answer, {"blocked": False, **meta})
@@ -579,6 +699,45 @@ def generate_compact_cocktail(query: str, max_tokens: int = 220, temp: float = 0
     return text
 
 
+def generate_compact_cocktail_with_history(query: str, context_messages: List[Dict[str, str]] = None, max_tokens: int = 220, temp: float = 0.2) -> str:
+    """
+    Возвращает короткий рецепт в строго заданном формате с учетом истории сообщений.
+    """
+    if context_messages is None:
+        context_messages = []
+
+    SYSTEM_PROMPT_PERSONA = (
+            SYSTEM_PROMPT_BARTENDER +
+            "\n\nУчитывай контекст предыдущих сообщений для более персонализированных рекомендаций.\n"
+            "\nОграничение: не более 700 символов. Отвечай строго в формате ниже (без лишних вводных):\n\n"
+            "Коктейль: \"НАЗВАНИЕ\"\n"
+            "ИНГРЕДИЕНТЫ:\n"
+            "  - ...\n"
+            "  - ...\n"
+            "ПРИГОТОВЛЕНИЕ:\n"
+            "  - шаг 1\n"
+            "  - шаг 2\n"
+            "ИНТЕРЕСНЫЙ ФАКТ: Одно-два коротких предложения.\n"
+            "Ни строчек лишних — только этот шаблон. Если нужно, предложи замену ингредиента в скобках."
+    )
+
+    # Формируем полный список сообщений
+    messages = [{"role": "system", "text": SYSTEM_PROMPT_PERSONA}]
+    messages.extend(context_messages)  # История предыдущих сообщений
+
+    user_prompt = f"Пользователь: {query}. Ответь коротко, максимум 4 ингредиента, максимум 4 шага."
+    messages.append({"role": "user", "text": user_prompt})
+
+    resp = yandex_completion(messages, temperature=temp, max_tokens=max_tokens)
+    if resp.get("error"):
+        logger.error("generate_compact_cocktail_with_history: completion error %s", resp)
+        return "Извините, не удалось сформировать рецепт."
+    text = extract_text_from_yandex_completion(resp)
+    if not text:
+        return "Извините, не удалось сформировать рецепт."
+    return text
+
+
 async def async_answer_user_query(user_text: str, user_id: int, k: int = 3) -> Tuple[str, dict]:
     """
     Async wrapper: выполняет синхронную работу в ThreadPoolExecutor,
@@ -598,3 +757,70 @@ def build_index_from_plain_texts(text_docs: List[Tuple[str, str]], embedding_mod
         docs.append({"id": id_, "text": txt, "meta": {"source": id_}})
     build_vectorstore_from_docs(docs, embedding_model_uri=embedding_model_uri)
     logger.info("Index built from %d texts", len(text_docs))
+
+
+# --- Message History Storage ---
+class MessageHistory:
+    """Хранилище истории сообщений пользователей с автоочисткой старых записей"""
+
+    def __init__(self, max_messages: int = 10, cleanup_hours: int = 24):
+        self.max_messages = max_messages
+        self.cleanup_hours = cleanup_hours
+        self._lock = threading.Lock()
+        # {user_id: [(timestamp, user_message, bot_response), ...]}
+        self._history: Dict[Union[str, int], List[Tuple[datetime, str, str]]] = {}
+
+    def add_message(self, user_id: Union[str, int], user_message: str, bot_response: str):
+        """Добавляет новое сообщение в историю пользователя"""
+        now = datetime.now()
+        with self._lock:
+            if user_id not in self._history:
+                self._history[user_id] = []
+
+            # Добавляем новое сообщение
+            self._history[user_id].append((now, user_message, bot_response))
+
+            # Оставляем только последние max_messages сообщений
+            if len(self._history[user_id]) > self.max_messages:
+                self._history[user_id] = self._history[user_id][-self.max_messages:]
+
+            # Очищаем старые записи (старше cleanup_hours часов)
+            cutoff_time = now - timedelta(hours=self.cleanup_hours)
+            self._history[user_id] = [
+                (ts, um, br) for ts, um, br in self._history[user_id]
+                if ts > cutoff_time
+            ]
+
+    def get_history(self, user_id: Union[str, int]) -> List[Tuple[datetime, str, str]]:
+        """Возвращает историю сообщений пользователя"""
+        with self._lock:
+            return self._history.get(user_id, []).copy()
+
+    def get_context_messages(self, user_id: Union[str, int]) -> List[Dict[str, str]]:
+        """Возвращает историю в формате для передачи в модель"""
+        history = self.get_history(user_id)
+        messages = []
+
+        for _, user_msg, bot_resp in history[-9:]:  # Берем последние 9 пар (оставляем место для текущего)
+            messages.append({"role": "user", "text": user_msg})
+            messages.append({"role": "assistant", "text": bot_resp})
+
+        return messages
+
+    def cleanup_old_users(self):
+        """Удаляет пользователей без активности более cleanup_hours часов"""
+        cutoff_time = datetime.now() - timedelta(hours=self.cleanup_hours)
+        with self._lock:
+            users_to_remove = []
+            for user_id, history in self._history.items():
+                if not history or (history and history[-1][0] < cutoff_time):
+                    users_to_remove.append(user_id)
+
+            for user_id in users_to_remove:
+                del self._history[user_id]
+
+# Глобальный объект для хранения истории
+MESSAGE_HISTORY = MessageHistory(
+    max_messages=int(os.getenv("MESSAGE_HISTORY_MAX", "10")),
+    cleanup_hours=int(os.getenv("MESSAGE_HISTORY_CLEANUP_HOURS", "24"))
+)
