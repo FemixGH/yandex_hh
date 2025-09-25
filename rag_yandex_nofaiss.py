@@ -123,6 +123,11 @@ except Exception:
 
 RATE_LIMITER = RateLimiter(rpm=_RPM, window_seconds=_WIN, cooldown_seconds=_CD)
 
+# Режим использования RAG: "auto" | "always" | "never"
+_RETRIEVAL_MODE = os.getenv("RAG_RETRIEVAL_MODE", "auto").strip().lower()
+if _RETRIEVAL_MODE not in {"auto", "always", "never"}:
+    _RETRIEVAL_MODE = "auto"
+
 
 def download_pdf_bytes(bucket: str, key: str, endpoint: str = S3_ENDPOINT,
                        access_key: Optional[str] = None, secret_key: Optional[str] = None) -> bytes:
@@ -181,6 +186,47 @@ def chunk_text(text: str, max_chars: int = 1500) -> List[str]:
         else:
             start = cut_pos
     return chunks
+
+
+# Решение, когда доставать контекст из RAG
+def should_use_retrieval(user_text: str, context_messages: Optional[List[Dict[str, str]]] = None) -> Tuple[bool, str]:
+    """
+    Возвращает (need_rag, reason).
+    - Учитывает режим через RAG_RETRIEVAL_MODE: always/never/auto
+    - В auto использует простые эвристики: RAG нужен для вопросов про документы/меню/источники.
+    """
+    mode = _RETRIEVAL_MODE
+    if mode == "always":
+        return True, "mode_always"
+    if mode == "never":
+        return False, "mode_never"
+
+    text = (user_text or "").lower()
+
+    # Признаки документ-ориентированного запроса
+    doc_keywords = [
+        "документ", "документа", "документы", "файл", "pdf", "источник", "контекст", "раздел",
+        "страница", "глава", "таблиц", "отчет", "отчёт", "каталог", "прайс", "меню",
+        "согласно", "на основе", "из документа", "в документе", "в файле", "в меню", "в базе",
+        "из базы", "по документу", "по файлу", "по меню"
+    ]
+
+    # Запросы о конкретном наличии/списке/цене лучше проверять в базе/меню
+    inventory_keywords = [
+        "есть ли", "наличие", "список", "перечисли", "что есть", "что входит", "сколько стоит",
+        "цена", "стоимость", "ассортимент", "фирменн", "наш бар", "наше меню", "из вашего меню"
+    ]
+
+    if any(k in text for k in doc_keywords + inventory_keywords):
+        return True, "keyword_match"
+
+    # Если пользователь ссылается на предыдущее содержимое (простая эвристика)
+    ref_keywords = ["как написано", "как сказано", "что там", "что в нем", "что в нём", "упоминалось"]
+    if any(k in text for k in ref_keywords):
+        return True, "reference_in_followup"
+
+    # По умолчанию — не использовать RAG
+    return False, "default_no_rag"
 
 
 def build_index_from_bucket(bucket: str, prefix: str = "", embedding_model_uri: Optional[str] = None,
@@ -571,16 +617,7 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
         audit_log({"user_id": user_id, "action": "blocked_pre", "query": user_text, "meta": pre_meta})
         return ("Извините, я не могу помочь с этим запросом.", {"blocked": True, "reason": pre_meta})
 
-    # 2) retrieval
-    try:
-        docs = semantic_search_in_memory(user_text, k=k)
-    except Exception as e:
-        logger.exception("semantic_search_in_memory failed: %s", e)
-        docs = []
-
-    meta["retrieved_count"] = len(docs)
-
-    # 2.1) Получаем историю сообщений пользователя для контекста
+    # 2) Получаем историю сообщений пользователя для контекста
     try:
         context_messages = MESSAGE_HISTORY.get_context_messages(user_id)
         meta["history_messages_count"] = len(context_messages) // 2  # делим на 2, так как пары user-assistant
@@ -589,81 +626,105 @@ def answer_user_query_sync(user_text: str, user_id: int, k: int = 3) -> Tuple[st
         context_messages = []
         meta["history_messages_count"] = 0
 
-    # Определяем, является ли запрос о настроении/эмоциях
+    # 3) Классификация намерения + решение об использовании RAG
     mood_keywords = ["настроение", "веселое", "спокойное", "энергичное", "романтичное",
                      "уверенное", "расслабленное", "грустн", "радост", "злост",
                      "устал", "стресс", "расслаб", "отдохн", "релакс"]
-    is_mood_query = any(keyword in user_text.lower() for keyword in mood_keywords) or \
-                    any(emoji in user_text for emoji in ["😊", "😌", "🔥", "💭", "😎", "🌊"])
+    is_mood_query = any(keyword in (user_text or "").lower() for keyword in mood_keywords) or \
+                    any(emoji in (user_text or "") for emoji in ["😊", "😌", "🔥", "💭", "😎", "🌊"])
 
-    # Проверяем качество найденных документов
-    relevant_docs = [d for d in docs if d.get("score", 0) > 0.3]  # порог релевантности
-    has_good_context = len(relevant_docs) > 0
+    need_rag, rag_reason = should_use_retrieval(user_text, context_messages)
+    meta["retrieval_decision"] = {"need_rag": need_rag, "reason": rag_reason, "mode": _RETRIEVAL_MODE}
 
-    # build context
-    context_parts = []
-    for d in relevant_docs:
-        src = d.get("meta", {}).get("source", d.get("id", "unknown"))
-        txt = d.get("text", "")
-        context_parts.append(f"Источник: {src}\n{txt}")
-    context_for_model = "\n\n---\n\n".join(context_parts) if context_parts else ""
+    # 4) Опционально: RAG-поиск (только если нужно)
+    docs: List[Dict[str, Any]] = []
+    relevant_docs: List[Dict[str, Any]] = []
+    has_good_context = False
 
-    # 3) call Yandex completion с учетом истории сообщений
-    if is_mood_query or not has_good_context:
-        # Для запросов по настроению или при недостатке контекста используем специальную генерацию
-        logger.info("Используем генерацию коктейля для запроса: %s (mood_query=%s, good_context=%s)",
-                    user_text[:50], is_mood_query, has_good_context)
+    if need_rag:
+        try:
+            docs = semantic_search_in_memory(user_text, k=k)
+        except Exception as e:
+            logger.exception("semantic_search_in_memory failed: %s", e)
+            docs = []
+        meta["retrieved_count"] = len(docs)
+        relevant_docs = [d for d in docs if d.get("score", 0) > 0.3]
+        has_good_context = len(relevant_docs) > 0
+    else:
+        meta["retrieval_skipped"] = True
+
+    # 5) Построение контекста для модели (если был найден)
+    context_for_model = ""
+    if has_good_context:
+        context_parts = []
+        for d in relevant_docs:
+            src = d.get("meta", {}).get("source", d.get("id", "unknown"))
+            txt = d.get("text", "")
+            context_parts.append(f"Источник: {src}\n{txt}")
+        context_for_model = "\n\n---\n\n".join(context_parts)
+
+    # 6) Выбор стратегии ответа
+    if is_mood_query:
+        # Настроенческий ответ без RAG, но можем дать контекст если он уже найден
+        logger.info("Используем mood-генерацию (need_rag=%s, good_ctx=%s)", need_rag, has_good_context)
         answer = generate_mood_based_cocktail_with_history(user_text, context_for_model, context_messages)
         if not answer:
             answer = generate_compact_cocktail_with_history(user_text, context_messages)
         if not answer:
             answer = "Извините, не удалось сформировать ответ."
     else:
-        # Стандартная обработка с контекстом и историей
-        # Формируем полный список сообщений для модели
-        messages = []
-        messages.append({"role": "system", "text": SYSTEM_PROMPT_BARTENDER})
+        if has_good_context:
+            # Стандартная RAG-ветка с историей
+            messages = []
+            messages.append({"role": "system", "text": SYSTEM_PROMPT_BARTENDER})
+            messages.extend(context_messages)
+            context_part = f"\n\nКонтекст документов:\n{context_for_model}\n\n" if context_for_model else "\n\n"
+            current_prompt = f"{context_part}Вопрос пользователя: {user_text}\nОтветь как профессиональный бармен: рекомендации, рецепты, советы."
+            messages.append({"role": "user", "text": current_prompt})
 
-        # Добавляем историю предыдущих сообщений
-        messages.extend(context_messages)
-
-        # Добавляем контекст документов и текущий запрос
-        context_part = f"\n\nКонтекст документов:\n{context_for_model}\n\n" if context_for_model else "\n\n"
-        current_prompt = f"{context_part}Вопрос пользователя: {user_text}\nОтветь как профессиональный бармен: рекомендации, рецепты, советы."
-        messages.append({"role": "user", "text": current_prompt})
-
-        yresp = yandex_completion(messages)
-        answer = "Извините, сейчас модель недоступна."
-        if not yresp.get("error"):
-            # Извлекаем текст из ответа Yandex API
-            answer = extract_text_from_yandex_completion(yresp)
+            yresp = yandex_completion(messages)
+            answer = "Извините, сейчас модель недоступна."
+            if not yresp.get("error"):
+                answer = extract_text_from_yandex_completion(yresp)
+                if not answer:
+                    answer = generate_compact_cocktail_with_history(user_text, context_messages)
+                if not answer:
+                    answer = "Извините, не удалось сформировать ответ."
+        else:
+            # Без RAG: короткий рецепт/совет с учётом истории
+            logger.info("RAG пропущен (reason=%s). Отвечаем без контекста.", rag_reason)
+            answer = generate_compact_cocktail_with_history(user_text, context_messages)
             if not answer:
-                # Если не удалось извлечь ответ, используем генератор коктейлей
-                answer = generate_compact_cocktail_with_history(user_text, context_messages)
+                # Фолбэк: общий ответ персоны бармена без контекста
+                messages = [{"role": "system", "text": SYSTEM_PROMPT_BARTENDER},
+                            {"role": "user", "text": user_text}]
+                yresp = yandex_completion(messages)
+                if not yresp.get("error"):
+                    answer = extract_text_from_yandex_completion(yresp)
             if not answer:
                 answer = "Извините, не удалось сформировать ответ."
 
-    meta["raw_response_preview"] = answer[:500]
-    meta["used_mood_generation"] = is_mood_query or not has_good_context
+    meta["raw_response_preview"] = (answer or "")[:500]
+    meta["used_mood_generation"] = bool(is_mood_query)
+    meta["used_retrieval"] = bool(has_good_context)
 
-    # 4) post moderation
+    # 7) post moderation
     ok_post, post_meta = post_moderate_output(answer)
     meta["post_moderation"] = post_meta
     if not ok_post:
-        audit_log({"user_id": user_id, "action": "blocked_post", "query": user_text, "raw_answer": answer[:400],
+        audit_log({"user_id": user_id, "action": "blocked_post", "query": user_text, "raw_answer": (answer or "")[:400],
                    "meta": post_meta})
         return ("Извините, я не могу предоставить этот ответ по соображениям безопасности.",
                 {"blocked": True, "reason": post_meta})
 
-    # 5) Сохраняем сообщение в историю перед возвратом
+    # 8) Сохраняем сообщение в историю
     try:
         MESSAGE_HISTORY.add_message(user_id, user_text, answer)
         logger.debug("Added message to history for user %s", user_id)
     except Exception as e:
         logger.exception("Failed to save message to history: %s", e)
-        # Не блокируем выполнение, если не удалось сохранить историю
 
-    # 6) success
+    # 9) success
     audit_log({"user_id": user_id, "action": "answered", "query": user_text, "retrieved": [d.get("id") for d in docs],
                "meta": meta})
     return (answer, {"blocked": False, **meta})
